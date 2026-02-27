@@ -3,15 +3,19 @@ import torch.nn as nn
 import torch.nn.functional as F
     
 class QNetwork(nn.Module):
-    def __init__(self, input_size, output_size, seed=0, hidden_size=64):
+    def __init__(self, input_size, output_size, seed=0, hidden_size=[16, 16, 16]):
         super(QNetwork, self).__init__()
         self.seed = torch.manual_seed(seed)
-        self.fc1 = nn.Linear(input_size, hidden_size)
-        self.fc2 = nn.Linear(hidden_size, output_size)
+        self.fc = nn.ModuleList()
+        self.fc.append(nn.Linear(input_size, hidden_size[0]))
+        for i in range(len(hidden_size)-1):
+            self.fc.append(nn.Linear(hidden_size[i], hidden_size[i+1]))
+        self.fc.append(nn.Linear(hidden_size[-1], output_size))
         self.activation = nn.ReLU()
     
     def forward(self, x):
-        x = self.activation(self.fc1(x))
-        x = self.fc2(x)
+        for layer in self.fc[:-1]:
+            x = self.activation(layer(x))
+        x = self.fc[-1](x)
         return x
     

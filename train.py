@@ -7,8 +7,8 @@ import matplotlib.pyplot as plt
 import time
 from agent import Agent
 
-__version__ = "1.0.0" 
-
+__version__ = "1.1.0" 
+record_name = __version__.replace(".", "-") + "_demo"
 # 1. Initialize the Environment and Agent
 env = gym.make('LunarLander-v3',
                enable_wind=False, wind_power=15.0, turbulence_power=1.5)
@@ -60,16 +60,16 @@ def dqn(n_episodes=2000, max_t=1000, eps_start=1.0, eps_end=0.01, eps_decay=0.99
         current_avg = np.mean(scores_window)
         if current_avg > best_score and i_episode > 1000:
             best_score = current_avg
-            torch.save(agent.qnetwork_local.state_dict(), 'checkpoint.pth')
+            torch.save(agent.qnetwork_local.state_dict(), f'{record_name}.pth')
 
         if i_episode % 250 == 0:
-            torch.save(agent.qnetwork_local.state_dict(), f'checkpoint_{i_episode}.pth')
+            torch.save(agent.qnetwork_local.state_dict(), f'{record_name}_{i_episode}.pth')
 
         # Check Win Condition
         if current_avg >= 200.0:
             print(f'\nEnvironment solved in {i_episode-100:d} episodes!\tAverage Score: {np.mean(scores_window):.2f}')
             # Save the trained neural network weights!
-            torch.save(agent.qnetwork_local.state_dict(), 'checkpoint.pth')
+            torch.save(agent.qnetwork_local.state_dict(), f'{record_name}_best.pth')
             break
             
     return scores

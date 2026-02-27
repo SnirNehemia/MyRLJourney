@@ -4,8 +4,12 @@ from gymnasium.wrappers import RecordVideo
 
 from agent import Agent
 
+
+current_version = "1-1-0"
+
 # 0. decide which model to run
-saved_model_name = "checkpoint_2000" 
+saved_model_name = f"{current_version}_demo_250"
+# saved_model_name = f"{current_version}_demo_best" 
 # 1. Initialize environment with RGB rendering (required for video)
 env = gym.make("LunarLander-v3", render_mode="rgb_array")
 
