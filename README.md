@@ -1,6 +1,6 @@
 # Deep Q-Network (DQN) Lunar Lander
 
-![Version](https://img.shields.io/badge/version-1.0.0-success)
+![Version](https://img.shields.io/badge/version-1.2.0-success)
 ![Python](https://img.shields.io/badge/Python-3.13-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-Deep%20Learning-EE4C2C)
 ![Gymnasium](https://img.shields.io/badge/Gymnasium-RL%20Environment-lightgrey)
@@ -19,7 +19,7 @@ This project implements the DQN algorithm using Pytorch, and on future version w
 ## Technical Implementation
 * **Framework:** PyTorch
 * **Architecture:**
-  * 2 Fully Connected Linear Layers (State Space: 8 -> 64 -> Action Space: 4)
+  * 3 Fully Connected Linear Layers (State Space: 8 -> 32 -> 32 -> Action Space: 4)
   * ReLU Activation functions
 * **Action Selection:** $\epsilon$-greedy policy with decay.
 * **Optimization:** Mean Squared Error (MSE) Loss with Adam Optimizer.
@@ -27,6 +27,9 @@ This project implements the DQN algorithm using Pytorch, and on future version w
 ### Key RL Features Included:
 1. **Experience Replay Buffer:** Breaks the correlation of sequential observations by randomly sampling past experiences (State, Action, Reward, Next State) to train the network.
 2. **Fixed Q-Targets:** Utilizes a "Local" network for active playing/learning and a frozen "Target" network for calculating the expected future rewards. This prevents the moving target problem and stabilizes training.
+3. **Double DQN:** Use the local network for action prediction and the target network as Q value estimator.
+
+
 
 ### Simulation details:
 **Rewards** are defined by the environment:

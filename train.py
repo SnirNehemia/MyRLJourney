@@ -6,17 +6,22 @@ from collections import deque
 import matplotlib.pyplot as plt
 import time
 from agent import Agent
+from omegaconf import OmegaConf
 
-__version__ = "1.1.0" 
-record_name = __version__.replace(".", "-") + "_demo"
+config = OmegaConf.load("config.yaml")
+__version__ = config.project.version
+
+record_name = __version__.replace(".", "-") + "_"+ config.video.record_name
 # 1. Initialize the Environment and Agent
 env = gym.make('LunarLander-v3',
                enable_wind=False, wind_power=15.0, turbulence_power=1.5)
 # State size is 8 (coordinates, velocity, angle, etc.)
 # Action size is 4 (engines: none, left, main, right)
-agent = Agent(state_size=8, action_size=4, seed=0)
+agent = Agent(state_size=8, action_size=4, seed=config.project.seed)
 
-def dqn(n_episodes=2000, max_t=1000, eps_start=1.0, eps_end=0.01, eps_decay=0.995):
+def dqn(n_episodes=config.training.n_episodes, max_t=config.training.max_t,
+         eps_start=config.training.eps_start, eps_end=config.training.eps_end, eps_decay=config.training.eps_decay,
+         win_condition=config.training.win_condition):
     """Deep Q-Learning loop."""
     scores = []                        # list containing scores from each episode
     scores_window = deque(maxlen=100)  # last 100 scores for our win condition
@@ -36,6 +41,8 @@ def dqn(n_episodes=2000, max_t=1000, eps_start=1.0, eps_end=0.01, eps_decay=0.99
             next_state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             
+            reward = modify_reward(reward, action)
+
             # 3. The agent learns from the result
             agent.step(state, action, reward, next_state, done)
             
@@ -60,19 +67,27 @@ def dqn(n_episodes=2000, max_t=1000, eps_start=1.0, eps_end=0.01, eps_decay=0.99
         current_avg = np.mean(scores_window)
         if current_avg > best_score and i_episode > 1000:
             best_score = current_avg
-            torch.save(agent.qnetwork_local.state_dict(), f'{record_name}.pth')
+            torch.save(agent.qnetwork_local.state_dict(), f'results/{record_name}_local_best.pth')
 
         if i_episode % 250 == 0:
-            torch.save(agent.qnetwork_local.state_dict(), f'{record_name}_{i_episode}.pth')
+            torch.save(agent.qnetwork_local.state_dict(), f'results/{record_name}_{i_episode}-eps.pth')
 
         # Check Win Condition
-        if current_avg >= 200.0:
+        if current_avg >= win_condition:
             print(f'\nEnvironment solved in {i_episode-100:d} episodes!\tAverage Score: {np.mean(scores_window):.2f}')
             # Save the trained neural network weights!
-            torch.save(agent.qnetwork_local.state_dict(), f'{record_name}_best.pth')
+            torch.save(agent.qnetwork_local.state_dict(), f'results/{record_name}_best.pth')
             break
             
     return scores
+
+def modify_reward(reward, action):
+    # Custom reward shaping to encourage unique landing behavior
+    # Discourage the agent from using the main engine (action 2), out of interest of seeing more creative solutions. This is optional and can be adjusted based on your preferences.
+    # if action == 2:
+    #     reward -= 0.05
+
+    return reward
 
 if __name__ == '__main__':
     print("Starting Training! This might take 5 to 15 minutes depending on your CPU...")
@@ -85,4 +100,5 @@ if __name__ == '__main__':
     plt.ylabel('Score')
     plt.xlabel('Episode #')
     plt.title('Agent Training Curve')
+    plt.grid()
     plt.show()

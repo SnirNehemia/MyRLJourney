@@ -8,21 +8,24 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
-# --- Hyperparameters ---
-BUFFER_SIZE = int(1e5)  # Replay memory size (100,000 steps)
-BATCH_SIZE = 64         # How many memories to learn from at once
-GAMMA = 0.99            # Discount factor (how much we care about future rewards)
-TAU = 1e-3              # Soft update of target parameters
-LR = 5e-4               # Learning rate (how fast we update weights)
-UPDATE_EVERY = 4        # How often to update the network
+from omegaconf import OmegaConf
+config = OmegaConf.load("config.yaml")
 
+# --- Hyperparameters ---
+BUFFER_SIZE = config.agent.buffer_size  # Replay memory size 
+BATCH_SIZE = config.agent.batch_size    # How many memories to learn from at once
+GAMMA = config.agent.gamma              # Discount factor (how much we care about future rewards)
+TAU = config.agent.tau                  # Soft update of target parameters
+LR = config.agent.lr                    # Learning rate (how fast we update weights)
+UPDATE_EVERY = config.agent.update_every        # How often to update the network
+DQN_type = config.agent.DQN_type        # Whether to use Double DQN (True) or standard DQN (False)
 # Check if GPU is available (makes training 10x faster)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class Agent():
     """Interacts with and learns from the environment."""
 
-    def __init__(self, state_size, action_size=4, seed=0):
+    def __init__(self, state_size, action_size=4, seed=config.project.seed, DQN_type=config.agent.DQN_type):
         """Initialize an Agent object.
         
         Params
@@ -34,6 +37,7 @@ class Agent():
         self.state_size = state_size
         self.action_size = action_size
         self.seed = random.seed(seed)
+        self.DQN_type = DQN_type
 
         # Q-Network (The "Local" brain that learns constantly)
         self.qnetwork_local = QNetwork(state_size, action_size, seed).to(device)
@@ -105,11 +109,20 @@ class Agent():
 
         # ------------------- update local network ------------------- #
         
-        # 1. Get max predicted Q values (for next states) from target model
-        Q_targets_next = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(1)
-        # detach - to prevent backpropagation through the target network, since we only want to update the local network right now
-        # max(1)[0] - to get the maximum Q value for each next state across all possible actions (the [0] is because max returns a tuple of (values, indices))
-        # unsqueeze(1) - to add an extra dimension so that Q_targets_next has the same shape as rewards (which is [batch_size, 1]) for the next step of computing Q targets.
+        # 1. Get Q values for next states from target model:
+        match self.DQN_type:
+            case "DQN":
+                # standard DQN:
+                Q_targets_next = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(1)
+                # detach - to prevent backpropagation through the target network, since we only want to update the local network right now
+                # max(1)[0] - to get the maximum Q value for each next state across all possible actions (the [0] is because max returns a tuple of (values, indices))
+                # unsqueeze(1) - to add an extra dimension so that Q_targets_next has the same shape as rewards (which is [batch_size, 1]) for the next step of computing Q targets.
+            case "DDQN":
+                # Double DQN:
+                next_action = self.qnetwork_local(next_states).detach().max(1)[1].unsqueeze(1)
+                # now we use the local network and choose the corresponding action rather than the Q value
+                Q_targets_next = self.qnetwork_target(next_states).detach().gather(1, next_action)
+                # and the target network to evaluate the actual Q value
 
         # 2. Compute Q targets for current states 
         # Formula: reward + (gamma * next_value)

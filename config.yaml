@@ -1,0 +1,30 @@
+project:
+  version: "1.2.0"
+  env_name: "LunarLander-v3"
+  seed: 0
+
+video:
+  record_name: "DDQN_HiddenSize_32-32"
+
+network:
+  input_size: 8
+  output_size: 4
+  hidden_size: [32, 32]
+
+agent:
+  buffer_size: 100000  # 1e5
+  batch_size: 64
+  gamma: 0.99
+  tau: 0.001           # 1e-3
+  lr: 0.0005           # 5e-4
+  update_every: 4
+  DQN_type: "DDQN"
+
+training:
+  n_episodes: 2000
+  max_t: 1000
+  eps_start: 1.0
+  eps_end: 0.01
+  eps_decay: 0.995
+  win_condition: 200.0
+

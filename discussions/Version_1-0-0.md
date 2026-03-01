@@ -5,7 +5,7 @@ This is the **Vanilla DQN**.
 
 This version include:
 
-* 2 Fully Connected Linear Layers (State Space: 8 -> 64 -> Action Space: 4)
+* 3 Fully Connected Linear Layers (State Space: 8 -> 64 -> Action Space: 4)
 * ReLU Activation functions
 * $\epsilon$-greedy policy with decay.
 * Mean Squared Error (MSE) Loss with Adam Optimizer.

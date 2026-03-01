@@ -4,12 +4,12 @@ from gymnasium.wrappers import RecordVideo
 
 from agent import Agent
 
-
-current_version = "1-1-0"
+from omegaconf import OmegaConf
+config = OmegaConf.load("config.yaml")
 
 # 0. decide which model to run
-saved_model_name = f"{current_version}_demo_250"
-# saved_model_name = f"{current_version}_demo_best" 
+saved_model_name = f"{config.project.version.replace('.', '-')}_{config.video.record_name}_best"
+# saved_model_name = f"{config.project.version.replace('.', '-')}_{config.video.record_name}_250-eps"
 # 1. Initialize environment with RGB rendering (required for video)
 env = gym.make("LunarLander-v3", render_mode="rgb_array")
 
@@ -27,7 +27,7 @@ agent = Agent(state_size=8, action_size=4, seed=0)
 
 # 4. Load the trained "brain" weights from our checkpoint file
 # We use map_location='cpu' so it loads safely even if you trained on a GPU
-agent.qnetwork_local.load_state_dict(torch.load(saved_model_name+'.pth', map_location=torch.device('cpu'), weights_only=True))
+agent.qnetwork_local.load_state_dict(torch.load(f'results/{saved_model_name}.pth', map_location=torch.device('cpu'), weights_only=True))
 print("Trained brain loaded successfully! Action rolling...")
 
 # 5. Play one single game
