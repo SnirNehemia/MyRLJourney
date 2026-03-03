@@ -4,7 +4,7 @@ project:
   seed: 0
 
 video:
-  record_name: "DDQN_HiddenSize_32-32"
+  record_name: "DDQN_HiddenSize_32-32_take2"
 
 network:
   input_size: 8
@@ -21,10 +21,14 @@ agent:
   DQN_type: "DDQN"
 
 training:
-  n_episodes: 2000
+  n_episodes: 800
   max_t: 1000
   eps_start: 1.0
   eps_end: 0.01
   eps_decay: 0.995
   win_condition: 200.0
+
+experiment:
+  seeds: [0, 1, 2]
+  n_episodes: 1500
 

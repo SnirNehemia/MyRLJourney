@@ -67,6 +67,25 @@ an example of score (total reward) vs. episode:
 
 Discussions for each major update should be in the discussion folder.
 
+## Version history:
+* 1.0.0 - standard DQN
+
+   > Replay Buffer\
+  Target Network
+
+* 1.1.0 - QoL
+
+  > Easier network modifications
+
+* 1.2.0 - DDQN & config
+
+  > Double DQN
+
+  > Configuration file
+
+* 1.2.1 - Experiments
+
+  > Experiments script
 
 ## How to Run This Project
 
@@ -80,4 +99,9 @@ python video_recorder.py
 **3. Train a new agent:**
 ```
 python train.py
+```
+
+**run experiments**
+```
+python experiments.py
 ```
