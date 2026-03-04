@@ -1,34 +1,38 @@
 project:
-  version: "1.2.0"
+  version: "1.2.1"
   env_name: "LunarLander-v3"
   seed: 0
 
-video:
-  record_name: "DDQN_HiddenSize_32-32_take2"
+save_parameters:
+  run_name: "DDQN_games_tau_0.005"
 
 network:
   input_size: 8
   output_size: 4
-  hidden_size: [32, 32]
+  hidden_size: [64, 64]
 
 agent:
-  buffer_size: 100000  # 1e5
+  buffer_size: 500000
   batch_size: 64
   gamma: 0.99
-  tau: 0.001           # 1e-3
-  lr: 0.0005           # 5e-4
+  tau: 0.005
+  lr: 0.001
   update_every: 4
   DQN_type: "DDQN"
 
 training:
-  n_episodes: 800
-  max_t: 1000
+  n_episodes: 2500
+  max_t: 750
   eps_start: 1.0
   eps_end: 0.01
-  eps_decay: 0.995
+  eps_decay: 0.999
   win_condition: 200.0
 
 experiment:
   seeds: [0, 1, 2]
-  n_episodes: 1500
+  n_episodes: 2500
 
+lunar_params:
+  gravity: -10.0
+  wind: 10.0
+  turbulence: 1.0

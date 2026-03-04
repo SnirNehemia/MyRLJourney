@@ -8,12 +8,17 @@ from omegaconf import OmegaConf
 import time 
 
 config = OmegaConf.load("config.yaml")
-
 __version__ = config.project.version
+full_run_name = __version__.replace(".", "-") + "_"+ config.save_parameters.run_name
 
-def train_for_experiment(DQN_type, n_episodes=config.experiment.n_episodes, seed=config.project.seed):
+def train_for_experiment(DQN_type, config=config, seed=config.project.seed):
     """Modified training loop that runs for a fixed number of episodes."""
-    env = gym.make('LunarLander-v3')
+    env = gym.make('LunarLander-v3',
+               enable_wind=True, 
+               wind_power=config.lunar_params.wind, 
+               turbulence_power=config.lunar_params.turbulence,
+               gravity=config.lunar_params.gravity)
+    env.reset(seed=seed)
     agent = Agent(state_size=8, action_size=4, seed=seed, DQN_type=DQN_type)
     
     scores = []
@@ -24,7 +29,7 @@ def train_for_experiment(DQN_type, n_episodes=config.experiment.n_episodes, seed
     
     time_ref = time.time()
 
-    for i_episode in range(1, n_episodes + 1):
+    for i_episode in range(1, config.experiment.n_episodes + 1):
         state, info = env.reset(seed=seed) # Set the seed for the environment!
         score = 0
         
@@ -44,6 +49,8 @@ def train_for_experiment(DQN_type, n_episodes=config.experiment.n_episodes, seed
         if i_episode % 100 == 0:
             print(f'\rEpisode {i_episode}\tAverage Score: {np.mean(scores_window[-1]):.2f}\tTime: {time.time() - time_ref:.2f} seconds = {(time.time() - time_ref)/60:.2f} minutes')
     print(f"Training complete for {DQN_type} with seed {seed}! Total time: {time.time() - time_ref:.2f} seconds = {(time.time() - time_ref)/60:.2f} minutes")
+    torch.save(agent.qnetwork_local.state_dict(),
+                        f'raw_results/{full_run_name}_{DQN_type}_{seed}.pth')
     return scores
 
 if __name__ == '__main__':
@@ -58,13 +65,13 @@ if __name__ == '__main__':
     print(" Starting Experiment: Standard DQN")
     for seed in seeds:
         print(f"Running DQN Seed {seed}...")
-        scores = train_for_experiment(DQN_type="DQN", seed=seed, n_episodes=episodes)
+        scores = train_for_experiment(DQN_type="DQN", config=config, seed=seed)
         dqn_results.append(scores)
         
     print("\n Starting Experiment: Double DQN")
     for seed in seeds:
         print(f"Running DDQN Seed {seed}...")
-        scores = train_for_experiment(DQN_type="DDQN", seed=seed, n_episodes=episodes)
+        scores = train_for_experiment(DQN_type="DDQN", config=config, seed=seed)
         ddqn_results.append(scores)
 
     # --- PLOTTING THE RESULTS ---
@@ -115,5 +122,5 @@ if __name__ == '__main__':
     plt.grid(True, alpha=0.3)
     
     # Save it so you can put it in your README!
-    plt.savefig("results/dqn_vs_ddqn_comparison.png")
+    plt.savefig(f"raw_results/{__version__.replace('.','-')}_{config.save_parameters.run_name}_comparison.png")
     plt.show()

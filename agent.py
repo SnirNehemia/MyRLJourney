@@ -72,8 +72,10 @@ class Agent():
             # If enough samples are available in memory, get random subset and learn
             if len(self.memory) > BATCH_SIZE:
                 experiences = self.memory.sample()
-                self.learn(experiences, GAMMA)
-
+                q_val = self.learn(experiences, GAMMA)
+                return q_val   
+        return None # Return None if we didn't learn on this step
+    
     def act(self, state, eps=0.):
         """Returns actions for given state as per current policy.
         
@@ -143,7 +145,9 @@ class Agent():
         self.optimizer.step()
 
         # ------------------- update target network ------------------- #
-        self.soft_update(self.qnetwork_local, self.qnetwork_target, TAU)                     
+        self.soft_update(self.qnetwork_local, self.qnetwork_target, TAU)  
+
+        return Q_targets.detach().mean().item()  # return Q for distribution research          
 
     def soft_update(self, local_model, target_model, tau):
         """Soft update model parameters.
