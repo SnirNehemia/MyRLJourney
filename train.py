@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import time
 from agent import Agent
 from omegaconf import OmegaConf
+import os, shutil
 
 config = OmegaConf.load("config.yaml")
 __version__ = config.project.version
@@ -16,15 +17,18 @@ full_run_name = __version__.replace(".", "-") + "_"+ config.save_parameters.run_
 def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None):
     """Deep Q-Learning training loop."""
     
+    # Create a directory for the run
+    output_dir = f"raw_results/{full_run_name}"
+    os.makedirs(output_dir, exist_ok=True)
+
     # Use config defaults unless overridden by experiment arguments
     DQN_type = DQN_type if DQN_type is not None else config.agent.DQN_type
-    print(f"DEBUG: dqn running with DQN_type={DQN_type}")
     current_seed = seed if seed is not None else config.project.seed
     total_episodes = n_episodes if n_episodes is not None else config.training.n_episodes
 
     # Initialize Environment and Agent
     env = gym.make('LunarLander-v3',
-               enable_wind=True, 
+               enable_wind=config.lunar_params.is_wind, 
                wind_power=config.lunar_params.wind, 
                turbulence_power=config.lunar_params.turbulence,
                gravity=config.lunar_params.gravity)
@@ -87,17 +91,17 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None):
             if current_avg > best_score and i_episode > 100:
                 best_score = current_avg
                 torch.save(agent.qnetwork_local.state_dict(),
-                        f'raw_results/{record_name}_local_best.pth')
+                        f'{output_dir}/{record_name}_local_best.pth')
                 
             if i_episode % 250 == 0:
                 torch.save(agent.qnetwork_local.state_dict(),
-                            f'raw_results/{record_name}_{i_episode}-eps.pth')
+                            f'{output_dir}/{record_name}_{i_episode}-eps.pth')
                 
             # Check Win Condition
             if current_avg >= config.training.win_condition:
                 print(f'\nEnvironment solved in {i_episode-100:d} episodes!\tAverage Score: {np.mean(scores_window):.2f}')
                 # Save the trained neural network weights!
-                torch.save(agent.qnetwork_local.state_dict(), f'raw_results/{record_name}_best.pth')
+                torch.save(agent.qnetwork_local.state_dict(), f'{output_dir}/{record_name}_best.pth')
                 break
         else: 
             if i_episode % 10 == 0:
@@ -105,23 +109,29 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None):
             if i_episode % 250 == 0:
                 print(f'\rEpisode {i_episode}\tAverage Score: {np.mean(scores_window):.2f}\tTime: {time.time() - time_ref:.0f} seconds = {(time.time() - time_ref)/60:.0f} minutes')
 
-    torch.save(agent.qnetwork_local.state_dict(), f'raw_results/{record_name}_last.pth')    
+    torch.save(agent.qnetwork_local.state_dict(), f'{output_dir}/{record_name}_last.pth')    
     return scores, q_values_history
 
 def modify_reward(reward, action):
     # Custom reward shaping to encourage unique landing behavior
-    # Discourage the agent from using the main engine (action 2), out of interest of seeing more creative solutions.
-    # This is optional and can be adjusted based on your preferences.
+
+    # add cost for main engine usage
     # if action == 2:
     #     reward -= 0.05
+
+    # add constant penalty to encourage faster landing
+    reward -= 0.001
 
     return reward
 
 if __name__ == '__main__':
     print("Starting Training!")
     # we can still call without arguments since cfg defaults to the global
+    output_dir = f"raw_results/{full_run_name}"
     # configuration, but tests or other scripts may pass a different cfg.
     scores, q_values = dqn(config, record_name=full_run_name)
+
+    shutil.copy("config.yaml", os.path.join(output_dir, "config.yaml"))
 
     # Plot the learning curve
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 6))
@@ -150,5 +160,5 @@ if __name__ == '__main__':
     ax2.grid(True, alpha=0.3, linestyle='--', linewidth=0.7)
 
     plt.tight_layout()
-    plt.savefig(f"raw_results/{full_run_name}_training_curve.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_dir}/{full_run_name}_training_curve.png", dpi=300, bbox_inches='tight')
     plt.show()

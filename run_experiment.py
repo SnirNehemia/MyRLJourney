@@ -6,12 +6,14 @@ from collections import deque
 from agent import Agent
 from omegaconf import OmegaConf
 import time 
+import os
 
 from train import dqn
 
 config = OmegaConf.load("config.yaml")
 __version__ = config.project.version
 full_run_name = __version__.replace(".", "-") + "_"+ config.save_parameters.run_name
+output_dir = f"raw_results/{full_run_name}"
 
 def plot_comparison(dqn_var, ddqn_var, var_name):
     # Convert lists to numpy arrays for easy math: shape will be (3, 800)
@@ -59,7 +61,7 @@ def plot_comparison(dqn_var, ddqn_var, var_name):
     plt.grid(True, alpha=0.3)
     
     # Save it so you can put it in your README!
-    plt.savefig(f"raw_results/{__version__.replace('.','-')}_{config.save_parameters.run_name}_{var_name}_comparison.png")
+    plt.savefig(f"{output_dir}/{full_run_name}_{var_name}_comparison.png")
     plt.show()
 
 if __name__ == '__main__':

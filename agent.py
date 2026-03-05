@@ -38,7 +38,6 @@ class Agent():
         self.action_size = action_size
         self.seed = random.seed(seed)
         self.DQN_type = DQN_type
-        print(f"DEBUG: Agent initialized with DQN_type={self.DQN_type}")
 
         # Q-Network (The "Local" brain that learns constantly)
         self.qnetwork_local = QNetwork(state_size, action_size, seed).to(device)

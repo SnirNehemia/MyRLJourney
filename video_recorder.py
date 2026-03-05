@@ -9,11 +9,10 @@ config = OmegaConf.load("config.yaml")
 
 full_run_name = config.project.version.replace(".", "-") + "_"+ config.save_parameters.run_name
 
-folder_path = "raw_results" # Replace with your path
+folder_path = f"raw_results/{full_run_name}"
 
 prefix = full_run_name
 suffix = '.pth'
-
 files = [
     f for f in os.listdir(folder_path) 
     if f.startswith(prefix) and f.endswith(suffix)
@@ -24,10 +23,10 @@ for run_name in files:
     env = gym.make("LunarLander-v3", render_mode="rgb_array")
 
     # 2. Wrap the environment to record video
-    # This will save the MP4 into a folder called "video"
+    # This will save the MP4 into the run's result folder
     env = RecordVideo(
-        env, 
-        video_folder="./raw_video", 
+        env,
+        video_folder=folder_path,
         episode_trigger=lambda x: True,
         name_prefix=run_name.replace(".pth", "")
     )
