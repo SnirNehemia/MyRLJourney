@@ -18,7 +18,7 @@ GAMMA = config.agent.gamma              # Discount factor (how much we care abou
 TAU = config.agent.tau                  # Soft update of target parameters
 LR = config.agent.lr                    # Learning rate (how fast we update weights)
 UPDATE_EVERY = config.agent.update_every        # How often to update the network
-DQN_type = config.agent.DQN_type        # Whether to use Double DQN (True) or standard DQN (False)
+
 # Check if GPU is available (makes training 10x faster)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -53,16 +53,17 @@ class Agent():
         # Initialize time step (for updating every UPDATE_EVERY steps)
         self.t_step = 0
 
-    def step(self, state, action, reward, next_state, done):
+    def step(self, state, action, reward, next_state, done, tau=TAU):
         """
         Save experience in replay memory, and use random sample from buffer to learn.
         Params
         ======
-        state (array_like): current state
-        action (int): action taken
-        reward (float): reward received
-        next_state (array_like): next state
-        done (bool): whether the episode has ended
+            state (array_like): current state
+            action (int): action taken
+            reward (float): reward received
+            next_state (array_like): next state
+            done (bool): whether the episode has ended
+            tau (float): interpolation parameter for soft update
         """
         # Save experience in replay memory
         self.memory.add(state, action, reward, next_state, done)
@@ -73,7 +74,7 @@ class Agent():
             # If enough samples are available in memory, get random subset and learn
             if len(self.memory) > BATCH_SIZE:
                 experiences = self.memory.sample()
-                q_val = self.learn(experiences, GAMMA)
+                q_val = self.learn(experiences, GAMMA, tau)
                 return q_val   
         return None # Return None if we didn't learn on this step
     
@@ -100,13 +101,14 @@ class Agent():
         else:
             return random.choice(np.arange(self.action_size))  # Pick Random
 
-    def learn(self, experiences, gamma):
+    def learn(self, experiences, gamma, tau):
         """Update value parameters using given batch of experience tuples.
 
         Params
         ======
             experiences (Tuple[torch.Tensor]): tuple of (s, a, r, s', done) tuples 
             gamma (float): discount factor
+            tau (float): interpolation parameter for soft update
         """
         states, actions, rewards, next_states, dones = experiences
 
@@ -146,9 +148,14 @@ class Agent():
         self.optimizer.step()
 
         # ------------------- update target network ------------------- #
-        self.soft_update(self.qnetwork_local, self.qnetwork_target, TAU)  
+        self.soft_update(self.qnetwork_local, self.qnetwork_target, tau)  
 
         return Q_targets.detach().mean().item()  # return Q for distribution research          
+
+    def update_lr(self, lr):
+        """Update learning rate for the optimizer"""
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
 
     def soft_update(self, local_model, target_model, tau):
         """Soft update model parameters.

@@ -36,6 +36,10 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None):
     q_values_history = [] 
     
     eps = config.training.eps_start
+    lr = config.training.get('lr_start', config.agent.lr)
+    tau = config.training.get('tau_start', config.agent.tau)
+    agent.update_lr(lr)
+
     best_score = -float('inf')
     time_ref = time.time()
 
@@ -49,7 +53,7 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None):
             next_state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             
-            q_val = agent.step(state, action, reward, next_state, done)
+            q_val = agent.step(state, action, reward, next_state, done, tau)
             if q_val is not None:
                 episode_q_vals.append(q_val)
                 
@@ -65,12 +69,12 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None):
             q_values_history.append(np.mean(episode_q_vals))
         else:
             q_values_history.append(0 if len(q_values_history)==0 else q_values_history[-1])
-        # # Print progress to the terminal
-        # if i_episode % 10 == 0:
-        #     print(f'\rEpisode {i_episode}\tAverage Score: {np.mean(scores_window):.0f}', end="")
-        # if i_episode % 100 == 0:
-        #     print(f'\rEpisode {i_episode}\tAverage Score: {np.mean(scores_window):.2f}\tTime: {time.time() - time_ref:.0f} seconds = {(time.time() - time_ref)/60:.0f} minutes')
+
         eps = max(config.training.eps_end, config.training.eps_decay * eps) 
+        lr = max(config.training.get('lr_end', 0.0), config.training.get('lr_decay', 1.0) * lr)
+        tau = max(config.training.get('tau_end', config.agent.tau), config.training.get('tau_decay', 1.0) * tau)
+        agent.update_lr(lr)
+
         current_avg = np.mean(scores_window)
         
         # Only print progress if we are running a standard training session (not an experiment)

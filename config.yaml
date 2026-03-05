@@ -1,10 +1,10 @@
 project:
-  version: "1.2.2"
+  version: "1.2.3"
   env_name: "LunarLander-v3"
   seed: 0
 
 save_parameters:
-  run_name: "DDQN_night_run"
+  run_name: "DDQN_scheduler_test"
 
 network:
   input_size: 8
@@ -27,6 +27,16 @@ training:
   eps_end: 0.01
   eps_decay: 0.999
   win_condition: 200.0
+
+  # Learning Rate Scheduler
+  lr_start: 0.001      # Initial learning rate
+  lr_end: 0.0001        # Minimum learning rate
+  lr_decay: 0.995       # Multiplicative decay factor per episode
+  
+  # Tau Scheduler
+  tau_start: 0.01       # Initial tau for soft update
+  tau_end: 0.001        # Minimum tau
+  tau_decay: 0.995      # Multiplicative decay factor per episode
 
 experiment:
   seeds: [0, 1,3,4]
