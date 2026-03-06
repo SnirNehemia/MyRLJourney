@@ -8,24 +8,13 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
-from omegaconf import OmegaConf
-config = OmegaConf.load("config.yaml")
-
-# --- Hyperparameters ---
-BUFFER_SIZE = config.agent.buffer_size  # Replay memory size 
-BATCH_SIZE = config.agent.batch_size    # How many memories to learn from at once
-GAMMA = config.agent.gamma              # Discount factor (how much we care about future rewards)
-TAU = config.agent.tau                  # Soft update of target parameters
-LR = config.agent.lr                    # Learning rate (how fast we update weights)
-UPDATE_EVERY = config.agent.update_every        # How often to update the network
-
 # Check if GPU is available (makes training 10x faster)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class Agent():
     """Interacts with and learns from the environment."""
 
-    def __init__(self, state_size, action_size=4, seed=config.project.seed, DQN_type=config.agent.DQN_type):
+    def __init__(self, state_size, action_size, config, seed=None):
         """Initialize an Agent object.
         
         Params
@@ -34,25 +23,37 @@ class Agent():
             action_size (int): dimension of each action
             seed (int): random seed
         """
+        self.config = config
         self.state_size = state_size
         self.action_size = action_size
-        self.seed = random.seed(seed)
-        self.DQN_type = DQN_type
+        self.seed = random.seed(seed if seed is not None else self.config.project.seed)
+
+        # --- Agent Parameters from Config ---
+        self.DQN_type = self.config.agent.DQN_type
+        self.use_replay_buffer = self.config.agent.get('use_replay_buffer', True)
+        self.use_target_network = self.config.agent.get('use_target_network', True)
+        self.buffer_size = self.config.agent.buffer_size
+        self.batch_size = self.config.agent.batch_size
+        self.gamma = self.config.agent.gamma
+        self.lr = self.config.agent.lr
+        self.update_every = self.config.agent.update_every
 
         # Q-Network (The "Local" brain that learns constantly)
-        self.qnetwork_local = QNetwork(state_size, action_size, seed).to(device)
+        self.qnetwork_local = QNetwork(state_size, action_size, seed if seed is not None else self.config.project.seed).to(device)
         
         # Q-Network (The "Target" brain that stays stable)
-        self.qnetwork_target = QNetwork(state_size, action_size, seed).to(device)
-        self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=LR)
+        self.qnetwork_target = QNetwork(state_size, action_size, seed if seed is not None else self.config.project.seed).to(device)
+        self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=self.lr)
 
         # Replay memory (We will define this class later)
-        self.memory = ReplayBuffer(action_size, BUFFER_SIZE, BATCH_SIZE, seed)
+        _buffer_size = self.buffer_size if self.use_replay_buffer else 1
+        _batch_size = self.batch_size if self.use_replay_buffer else 1
+        self.memory = ReplayBuffer(action_size, _buffer_size, _batch_size, seed if seed is not None else self.config.project.seed)
         
         # Initialize time step (for updating every UPDATE_EVERY steps)
         self.t_step = 0
 
-    def step(self, state, action, reward, next_state, done, tau=TAU):
+    def step(self, state, action, reward, next_state, done, tau):
         """
         Save experience in replay memory, and use random sample from buffer to learn.
         Params
@@ -68,12 +69,12 @@ class Agent():
         self.memory.add(state, action, reward, next_state, done)
         
         # Learn every UPDATE_EVERY time steps.
-        self.t_step = (self.t_step + 1) % UPDATE_EVERY
+        self.t_step = (self.t_step + 1) % self.update_every
         if self.t_step == 0:
             # If enough samples are available in memory, get random subset and learn
-            if len(self.memory) > BATCH_SIZE:
+            if len(self.memory) >= self.batch_size:
                 experiences = self.memory.sample()
-                q_val = self.learn(experiences, GAMMA, tau)
+                q_val = self.learn(experiences, self.gamma, tau)
                 return q_val   
         return None # Return None if we didn't learn on this step
     
@@ -147,7 +148,7 @@ class Agent():
         self.optimizer.step()
 
         # ------------------- update target network ------------------- #
-        self.soft_update(self.qnetwork_local, self.qnetwork_target, tau)  
+        self.soft_update(self.qnetwork_local, self.qnetwork_target, 1.0 if not self.use_target_network else tau)
 
         return Q_targets.detach().mean().item()  # return Q for distribution research          
 

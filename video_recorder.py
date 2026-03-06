@@ -32,7 +32,7 @@ for run_name in files:
     )
 
     # 3. Initialize the agent (architecture must match our training setup)
-    agent = Agent(state_size=8, action_size=4, seed=0)
+    agent = Agent(state_size=8, action_size=4, config=config, seed=0)
 
     # 4. Load the trained "brain" weights from our checkpoint file
     # We use map_location='cpu' so it loads safely even if you trained on a GPU

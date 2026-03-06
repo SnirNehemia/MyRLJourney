@@ -76,7 +76,7 @@ if __name__ == '__main__':
     print(" Starting Experiment: Standard DQN")
     for seed in seeds:
         print(f"Running DQN Seed {seed}...")
-        scores, qvals = dqn(config, DQN_type="DQN", seed=seed,
+        scores, qvals, _ = dqn(config, DQN_type="DQN", seed=seed,
                             n_episodes=config.experiment.n_episodes, record_name=f"{full_run_name}_DQN_{seed}")
         dqn_scores.append(scores)
         dqn_qvals.append(qvals)
@@ -84,7 +84,7 @@ if __name__ == '__main__':
     print("\n Starting Experiment: Double DQN")
     for seed in seeds:
         print(f"Running DDQN Seed {seed}...")
-        scores, qvals = dqn(config, DQN_type="DDQN", seed=seed,
+        scores, qvals, _ = dqn(config, DQN_type="DDQN", seed=seed,
                             n_episodes=config.experiment.n_episodes, record_name=f"{full_run_name}_DDQN_{seed}")
         ddqn_scores.append(scores)
         ddqn_qvals.append(qvals)
