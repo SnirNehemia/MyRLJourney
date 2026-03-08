@@ -10,12 +10,7 @@ import os
 
 from train import dqn
 
-config = OmegaConf.load("config.yaml")
-__version__ = config.project.version
-full_run_name = __version__.replace(".", "-") + "_"+ config.save_parameters.run_name
-output_dir = f"raw_results/{full_run_name}"
-
-def plot_comparison(dqn_var, ddqn_var, var_name):
+def plot_comparison(dqn_var, ddqn_var, var_name, output_path, timer_start):
     # Convert lists to numpy arrays for easy math: shape will be (3, 800)
     dqn_results = np.array(dqn_var)
     ddqn_results = np.array(ddqn_var)
@@ -35,7 +30,7 @@ def plot_comparison(dqn_var, ddqn_var, var_name):
     ddqn_mean_smooth = moving_average(ddqn_mean)
     x_axis = np.arange(len(dqn_mean_smooth))
 
-    print(f"Experiment complete! Total time: {(time.time() - timer)/60:.2f} minutes = {(time.time() - timer)/60/60:.2f} hours")
+    print(f"Experiment complete! Total time: {(time.time() - timer_start)/60:.2f} minutes = {(time.time() - timer_start)/60/60:.2f} hours")
 
     plt.figure(figsize=(10, 6))
     
@@ -61,13 +56,22 @@ def plot_comparison(dqn_var, ddqn_var, var_name):
     plt.grid(True, alpha=0.3)
     
     # Save it so you can put it in your README!
-    plt.savefig(f"{output_dir}/{full_run_name}_{var_name}_comparison.png")
+    plt.savefig(output_path)
     plt.show()
 
 if __name__ == '__main__':
+    config = OmegaConf.load("config.yaml")
     seeds = config.experiment.seeds
     episodes = config.experiment.n_episodes
     timer = time.time()
+
+    version_str = config.project.version.replace('.', '-')
+    experiment_name = config.save_parameters.run_name
+    run_type = 'experiment'
+
+    # This is the main directory for the experiment's summary plots
+    experiment_summary_dir = f"raw_results/{version_str}/{run_type}/{experiment_name}"
+    os.makedirs(experiment_summary_dir, exist_ok=True)
     
     # Dictionaries to store results
     dqn_scores, dqn_qvals = [], []
@@ -76,21 +80,25 @@ if __name__ == '__main__':
     print(" Starting Experiment: Standard DQN")
     for seed in seeds:
         print(f"Running DQN Seed {seed}...")
-        scores, qvals, _ = dqn(config, DQN_type="DQN", seed=seed,
-                            n_episodes=config.experiment.n_episodes, record_name=f"{full_run_name}_DQN_{seed}")
+        record_name = f"{experiment_name}_DQN_seed{seed}"
+        scores, qvals, _ = dqn(config, DQN_type="DQN", seed=seed, n_episodes=episodes, 
+                               record_name=record_name, run_type=run_type)
         dqn_scores.append(scores)
         dqn_qvals.append(qvals)
         
     print("\n Starting Experiment: Double DQN")
     for seed in seeds:
         print(f"Running DDQN Seed {seed}...")
-        scores, qvals, _ = dqn(config, DQN_type="DDQN", seed=seed,
-                            n_episodes=config.experiment.n_episodes, record_name=f"{full_run_name}_DDQN_{seed}")
+        record_name = f"{experiment_name}_DDQN_seed{seed}"
+        scores, qvals, _ = dqn(config, DQN_type="DDQN", seed=seed, n_episodes=episodes,
+                               record_name=record_name, run_type=run_type)
         ddqn_scores.append(scores)
         ddqn_qvals.append(qvals)
 
     # --- PLOTTING THE RESULTS ---
     print("\n Generating comparison graph...")
     
-    plot_comparison(dqn_scores, ddqn_scores, 'Scores')
-    plot_comparison(dqn_qvals, ddqn_qvals, 'Q-Values')
+    plot_comparison(dqn_scores, ddqn_scores, 'Scores', 
+                    output_path=f"{experiment_summary_dir}/scores_comparison.png", timer_start=timer)
+    plot_comparison(dqn_qvals, ddqn_qvals, 'Q-Values',
+                    output_path=f"{experiment_summary_dir}/q_values_comparison.png", timer_start=timer)

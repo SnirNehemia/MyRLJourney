@@ -6,21 +6,85 @@ import time
 
 from train import dqn
 
+def plot_ablation_statistics(results_dict, title, y_label, output_path, win_condition=None):
+    """
+    Plots the mean and standard deviation of multiple runs for different configurations.
+    """
+    plt.style.use('seaborn-v0_8-whitegrid')
+    plt.figure(figsize=(12, 8))
+    if len(results_dict)>4:
+        colors = ['#1f77b4', "#0efff3", "#31c152", "#b2af0c", "#dd5e0f", "#a209ba"]
+    else:
+        colors = ['#1f77b4', "#15cf0b", "#e11126", "#b2af0c"]
+
+    for i, (name, runs) in enumerate(results_dict.items()):
+        runs_np = np.array(runs)
+        
+        mean = np.mean(runs_np, axis=0)
+        std = np.std(runs_np, axis=0)
+        
+        window = 100
+        def moving_average(data, window_size=100):
+            return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
+            
+        mean_smooth = moving_average(mean, window)
+        std_smooth = moving_average(std, window)
+        x_axis = np.arange(len(mean_smooth))
+        
+        plt.plot(x_axis, mean_smooth, label=name, color=colors[i % len(colors)], linewidth=2.5)
+        plt.fill_between(x_axis, mean_smooth - std_smooth, mean_smooth + std_smooth, 
+                         color=colors[i % len(colors)], alpha=0.15)
+
+    if win_condition is not None:
+        plt.axhline(y=win_condition, color='gray', linestyle='--', label=f'Win Condition ({win_condition})')
+        
+    plt.title(title, fontsize=18, fontweight='bold')
+    plt.xlabel('Episode # (smoothed over 100 episodes)', fontsize=12)
+    plt.ylabel(y_label, fontsize=12)
+    plt.legend(fontsize=11)
+    plt.grid(True, alpha=0.4)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.show()
+
 if __name__ == '__main__':
     base_config = OmegaConf.load("config.yaml")
-    n_episodes = base_config.ablation_study.get('n_episodes', 2500)
-    run_name_prefix = "ablation_study"
+    n_episodes = base_config.ablation_study.get('n_episodes', 1000)
+    study_name = base_config.ablation_study.get('ablation_name', 'ablation_study')
+    seeds = base_config.ablation_study.get('seeds', [0])
+    version_str = base_config.project.version.replace('.', '-')
+    run_type = 'ablation'
 
     # This will be the main folder for the study's output plot
-    study_output_dir = f"raw_results/{base_config.project.version.replace('.', '-')}_{run_name_prefix}"
-    os.makedirs(study_output_dir, exist_ok=True)
+    study_summary_dir = f"raw_results/{version_str}/{run_type}/{study_name}"
+    os.makedirs(study_summary_dir, exist_ok=True)
 
-    configs_to_test = [
-        {'name': 'Full DQN (Buffer, Target)', 'buffer': True, 'target': True},
-        {'name': 'No Replay Buffer', 'buffer': False, 'target': True},
-        {'name': 'No Target Network', 'buffer': True, 'target': False},
-        {'name': 'Naive DQN (No Buffer, No Target)', 'buffer': False, 'target': False},
-    ]
+    # --- Define configurations to test ---
+    configs_to_test = []
+    is_sweep = base_config.ablation_study.get('sweep', {}).get('enabled', False)
+
+    if is_sweep:
+        print("--- Running Parameter Sweep Study ---")
+        sweep_config = base_config.ablation_study.sweep
+        param_to_sweep = sweep_config.parameter
+        sweep_values = sweep_config.list_values
+        
+        param_name_for_label = param_to_sweep.split('.')[-1]
+        for value in sweep_values:
+            configs_to_test.append({
+                'name': f"{param_name_for_label}={value}",
+                'is_sweep': True,
+                'param': param_to_sweep,
+                'value': value
+            })
+    else:
+        print("--- Running Component Ablation Study ---")
+        configs_to_test = [
+            {'name': 'Full DQN (Buffer, Target)', 'is_sweep': False, 'buffer': True, 'target': True},
+            {'name': 'No Replay Buffer', 'is_sweep': False, 'buffer': False, 'target': True},
+            {'name': 'No Target Network', 'is_sweep': False, 'buffer': True, 'target': False},
+            {'name': 'Naive DQN (No Buffer, No Target)', 'is_sweep': False, 'buffer': False, 'target': False},
+        ]
 
     results = {}
     q_results = {}
@@ -28,92 +92,56 @@ if __name__ == '__main__':
 
     for cfg_mod in configs_to_test:
         print(f"\n--- Running Ablation: {cfg_mod['name']} ---")
-        # Create a copy of the base config to modify for the run
-        run_config = base_config.copy()
         
-        # Apply modifications for the current ablation run
-        run_config.agent.use_replay_buffer = cfg_mod['buffer']
-        run_config.agent.use_target_network = cfg_mod['target']
-        run_config.project.seed = run_config.ablation_study.seed
-        # Define a unique name for this run's artifacts and folder
-        record_name = f"{run_name_prefix}_{cfg_mod['name'].replace(' ', '_').replace('(', '').replace(')', '').replace(',', '')}"
-        
-        # Run the training. The dqn function will create a unique folder for this run.
-        scores, _, avg_max_q = dqn(
-            config=run_config, 
-            n_episodes=n_episodes, 
-            record_name=record_name
-        )
-        
-        results[cfg_mod['name']] = scores
-        q_results[cfg_mod['name']] = avg_max_q
+        all_seed_scores = []
+        all_seed_q_vals = []
+
+        for seed in seeds:
+            print(f"  Running seed: {seed}")
+            run_config = base_config.copy()
+            
+            # Apply modifications for the current run
+            if cfg_mod.get('is_sweep', False):
+                OmegaConf.update(run_config, cfg_mod['param'], cfg_mod['value'])
+            else: # Component ablation
+                run_config.agent.use_replay_buffer = cfg_mod['buffer']
+                run_config.agent.use_target_network = cfg_mod['target']
+            
+            # Define a unique name for this run's artifacts and folder
+            record_name = f"{study_name}_{cfg_mod['name'].replace(' ', '_').replace('(', '').replace(')', '').replace(',', '').replace('=', '_')}_seed{seed}"
+            
+            # Run the training. The dqn function will create a unique folder for this run.
+            scores, _, avg_max_q = dqn(
+                config=run_config, 
+                n_episodes=n_episodes, 
+                record_name=record_name, 
+                run_type=run_type,
+                seed=seed
+            )
+            
+            all_seed_scores.append(scores)
+            all_seed_q_vals.append(avg_max_q)
+
+        results[cfg_mod['name']] = all_seed_scores
+        q_results[cfg_mod['name']] = all_seed_q_vals
         print(f"\n--- Finished: {cfg_mod['name']} ---")
 
     print(f"\nAblation study finished in {(time.time() - timer)/60:.2f} minutes.")
 
     # --- Plotting the comparison ---
-    print("Generating comparison plot...")
-    plt.style.use('seaborn-v0_8-whitegrid') 
-    fig, axs = plt.subplots(2, 2, figsize=(14, 10), sharex=True, sharey=True, layout="constrained")
-    fig.suptitle('DQN Ablation Study: Lunar Lander Performance', fontsize=22, fontweight='bold')
+    print("\nGenerating comparison plots...")
+    
+    plot_ablation_statistics(
+        results_dict=results,
+        title='Ablation Study: Agent Performance (Mean & Std Dev)',
+        y_label='Average Score',
+        output_path=f"{study_summary_dir}/scores_comparison.png",
+        win_condition=base_config.training.win_condition
+    )
 
-    axs = axs.flatten()
-    window = 100
-
-    for i, (name, scores) in enumerate(results.items()):
-        scores = np.array(scores)
-        moving_avg = np.convolve(scores, np.ones(window)/window, mode='valid')
-        
-        # Plotting
-        axs[i].plot(scores, color='skyblue', alpha=0.5, label='Episode Score', linewidth=1)
-        axs[i].plot(np.arange(window-1, len(scores)), moving_avg, color='#003366', linewidth=2.5, label=f'{window}-Ep Avg.')
-        axs[i].axhline(y=200, color='#d62728', linestyle='--', linewidth=1.5, label='Win Condition')
-        
-        # Text Annotation for Success Rate
-        # Calculate Success Rate (%)
-        success_rate = (np.sum(scores >= run_config.training.win_condition) / len(scores)) * 100
-        # Transform=axs[i].transAxes allows us to place text relative to the plot (0,0 is bottom left, 1,1 is top right)
-        axs[i].text(0.05, 0.92, f'Success Rate: {success_rate:.1f}%', 
-        transform=axs[i].transAxes, fontsize=12, fontweight='bold', 
-        bbox=dict(facecolor='white', alpha=0.8, edgecolor='none'))
-
-        # Clean titles
-        axs[i].set_title(name, fontsize=16, fontweight='semibold', pad=10)
-        axs[i].grid(True, linestyle=':', alpha=0.6)
-        axs[i].set_ylim(-400, 275)
-
-    fig.supxlabel('Episode #', fontsize=14, fontweight='bold')
-    fig.supylabel('Score', fontsize=14, fontweight='bold')
-
-    handles, labels = axs[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc='lower center', ncol=3, bbox_to_anchor=(0.5, -0.05), fontsize=12)
-
-    plt.savefig(f"{study_output_dir}/ablation_comparison.png", dpi=300)
-    plt.show()
-
-    # --- Plotting the Q-Value comparison ---
-    print("Generating Q-value comparison plot...")
-    plt.style.use('seaborn-v0_8-whitegrid') 
-    fig_q, axs_q = plt.subplots(2, 2, figsize=(14, 10), sharex=True, sharey=True, layout="constrained")
-    fig_q.suptitle('Ablation Study: Average Max Q-Value (Local Network)', fontsize=22, fontweight='bold')
-
-    axs_q = axs_q.flatten()
-
-    for i, (name, q_values) in enumerate(q_results.items()):
-        q_values = np.array(q_values)
-        
-        # Plotting
-        axs_q[i].plot(q_values, color='#2ca02c', linewidth=2, label='Avg. Max Q-Value')
-        
-        # Clean titles
-        axs_q[i].set_title(name, fontsize=16, fontweight='semibold', pad=10)
-        axs_q[i].grid(True, linestyle=':', alpha=0.6)
-
-    fig_q.supxlabel('Episode #', fontsize=14, fontweight='bold')
-    fig_q.supylabel('Average Max Q-Value per Episode', fontsize=14, fontweight='bold')
-
-    handles, labels = axs_q[0].get_legend_handles_labels()
-    fig_q.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.05), fontsize=12)
-
-    plt.savefig(f"{study_output_dir}/ablation_q_values_comparison.png", dpi=300)
-    plt.show()
+    plot_ablation_statistics(
+        results_dict=q_results,
+        title='Ablation Study: Average Max Q-Value (Mean & Std Dev)',
+        y_label='Average Max Q-Value',
+        output_path=f"{study_summary_dir}/q_values_comparison.png"
+    )

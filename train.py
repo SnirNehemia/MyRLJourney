@@ -10,19 +10,15 @@ from omegaconf import OmegaConf
 import os, shutil
 
 config = OmegaConf.load("config.yaml")
-__version__ = config.project.version
 
-full_run_name = __version__.replace(".", "-") + "_"+ config.save_parameters.run_name
-
-def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None):
+def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run_type='train'):
     """Deep Q-Learning training loop."""
 
     _version = config.project.version.replace(".", "-")
     _run_name = record_name if record_name is not None else config.save_parameters.run_name
-    _full_run_name = f"{_version}_{_run_name}"
 
     # Create a directory for the run
-    output_dir = f"raw_results/{_full_run_name}"
+    output_dir = f"raw_results/{_version}/{run_type}/{_run_name}"
     os.makedirs(output_dir, exist_ok=True)
     # Save the exact config used for this run for reproducibility
     OmegaConf.save(config, os.path.join(output_dir, "run_config.yaml"))
@@ -57,7 +53,7 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None):
     time_ref = time.time()
 
     for i_episode in range(1, total_episodes + 1):
-        state, info = env.reset(seed=current_seed)
+        state, info = env.reset(seed=current_seed+i_episode)
         score = 0
         episode_q_vals = []
         episode_max_q_vals = []
@@ -153,11 +149,15 @@ def modify_reward(reward, action):
 
 if __name__ == '__main__':
     print("Starting Training!")
-    # we can still call without arguments since cfg defaults to the global
-    output_dir = f"raw_results/{full_run_name}"
-    # configuration, but tests or other scripts may pass a different cfg.
-    scores, q_values, avg_max_q_values = dqn(config, record_name=full_run_name)
+    
+    # Construct a record name for this standalone training run
+    seed = config.project.seed
+    run_name = config.save_parameters.run_name
+    record_name = f"{run_name}_seed{seed}"
+    output_dir = f"raw_results/{config.project.version.replace('.', '-')}/train/{record_name}"
 
+    scores, q_values, avg_max_q_values = dqn(config, record_name=record_name, run_type='train', seed=seed)
+    
     # Plot the learning curve
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
     
@@ -191,5 +191,5 @@ if __name__ == '__main__':
     ax3.grid(True, alpha=0.3, linestyle='--', linewidth=0.7)
 
     plt.tight_layout()
-    plt.savefig(f"{output_dir}/{full_run_name}_training_curve.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_dir}/{record_name}_training_curve.png", dpi=300, bbox_inches='tight')
     plt.show()
