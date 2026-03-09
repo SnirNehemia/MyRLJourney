@@ -6,17 +6,14 @@ import time
 
 from train import dqn
 
-def plot_ablation_statistics(results_dict, title, y_label, output_path, win_condition=None):
+def plot_ablation_statistics(results_dict, title, y_label, output_path, win_condition=None, show_plots=True):
     """
     Plots the mean and standard deviation of multiple runs for different configurations.
     """
     plt.style.use('seaborn-v0_8-whitegrid')
     plt.figure(figsize=(12, 8))
-    if len(results_dict)>4:
-        colors = ['#1f77b4', "#0efff3", "#31c152", "#b2af0c", "#dd5e0f", "#a209ba"]
-    else:
-        colors = ['#1f77b4', "#15cf0b", "#e11126", "#b2af0c"]
-
+    colors = plt.cm.viridis(np.linspace(0, 1, len(results_dict)))
+    
     for i, (name, runs) in enumerate(results_dict.items()):
         runs_np = np.array(runs)
         
@@ -45,9 +42,10 @@ def plot_ablation_statistics(results_dict, title, y_label, output_path, win_cond
     plt.grid(True, alpha=0.4)
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
-    plt.show()
+    if show_plots:
+        plt.show()
 
-if __name__ == '__main__':
+def run_ablation_study():
     base_config = OmegaConf.load("config.yaml")
     n_episodes = base_config.ablation_study.get('n_episodes', 1000)
     study_name = base_config.ablation_study.get('ablation_name', 'ablation_study')
@@ -67,7 +65,7 @@ if __name__ == '__main__':
         print("--- Running Parameter Sweep Study ---")
         sweep_config = base_config.ablation_study.sweep
         param_to_sweep = sweep_config.parameter
-        sweep_values = sweep_config.list_values
+        sweep_values = sweep_config['list_values']
         
         param_name_for_label = param_to_sweep.split('.')[-1]
         for value in sweep_values:
@@ -131,17 +129,23 @@ if __name__ == '__main__':
     # --- Plotting the comparison ---
     print("\nGenerating comparison plots...")
     
+    show_plots = base_config.save_parameters.get('show_plots', True)
     plot_ablation_statistics(
         results_dict=results,
         title='Ablation Study: Agent Performance (Mean & Std Dev)',
         y_label='Average Score',
         output_path=f"{study_summary_dir}/scores_comparison.png",
-        win_condition=base_config.training.win_condition
+        win_condition=base_config.training.win_condition,
+        show_plots=show_plots
     )
 
     plot_ablation_statistics(
         results_dict=q_results,
         title='Ablation Study: Average Max Q-Value (Mean & Std Dev)',
         y_label='Average Max Q-Value',
-        output_path=f"{study_summary_dir}/q_values_comparison.png"
+        output_path=f"{study_summary_dir}/q_values_comparison.png",
+        show_plots=show_plots
     )
+
+if __name__ == '__main__':
+    run_ablation_study()

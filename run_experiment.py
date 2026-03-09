@@ -10,7 +10,7 @@ import os
 
 from train import dqn
 
-def plot_comparison(dqn_var, ddqn_var, var_name, output_path, timer_start):
+def plot_comparison(dqn_var, ddqn_var, var_name, output_path, timer_start, show_plots=True):
     # Convert lists to numpy arrays for easy math: shape will be (3, 800)
     dqn_results = np.array(dqn_var)
     ddqn_results = np.array(ddqn_var)
@@ -57,7 +57,8 @@ def plot_comparison(dqn_var, ddqn_var, var_name, output_path, timer_start):
     
     # Save it so you can put it in your README!
     plt.savefig(output_path)
-    plt.show()
+    if show_plots:
+        plt.show()
 
 if __name__ == '__main__':
     config = OmegaConf.load("config.yaml")
@@ -98,7 +99,10 @@ if __name__ == '__main__':
     # --- PLOTTING THE RESULTS ---
     print("\n Generating comparison graph...")
     
+    show_plots = config.save_parameters.get('show_plots', True)
     plot_comparison(dqn_scores, ddqn_scores, 'Scores', 
-                    output_path=f"{experiment_summary_dir}/scores_comparison.png", timer_start=timer)
+                    output_path=f"{experiment_summary_dir}/scores_comparison.png", timer_start=timer,
+                    show_plots=show_plots)
     plot_comparison(dqn_qvals, ddqn_qvals, 'Q-Values',
-                    output_path=f"{experiment_summary_dir}/q_values_comparison.png", timer_start=timer)
+                    output_path=f"{experiment_summary_dir}/q_values_comparison.png", timer_start=timer,
+                    show_plots=show_plots)

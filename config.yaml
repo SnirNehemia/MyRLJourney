@@ -4,7 +4,9 @@ project:
   seed: 0
 
 save_parameters:
-  run_name: "Replay_and_TargetNetwork_experiment"
+  run_name: "ReplayBuffer_sweep"
+  n_gifs: 5
+  show_plots: false # Set to true to display plots, false to only save them
 
 network:
   input_size: 8
@@ -13,7 +15,7 @@ network:
 
 agent:
   buffer_size: 100000
-  batch_size: 128
+  batch_size: 64
   gamma: 0.99
   tau: 0.005 # overrun by the tau scheduler
   lr: 0.001 # overrun by the lr scheduler
@@ -46,18 +48,20 @@ experiment:
 
 ablation_study:
   # The default (when sweep.enable=false), it runs a comaprison of buffer/no_buffer and target/no_target.
-  ablation_name: "SeplayBuffer_and_TargetNetwork_SingleRun"
-  seeds: [0]
-  n_episodes: 2000
+  ablation_name: "ReplayBuffer_sweep"
+  seeds: [1, 2, 3]
+  n_episodes: 3000
   sweep:
-    enabled: false
+    enabled: true
     # Sweep over a single parameter.
     # The parameter path is dot-separated from the root of the config.
     parameter: "agent.buffer_size"
-    list_values: [0, 10, 100, 1000, 10000]
+    list_values: [0, 100, 10000, 100000]
+    # parameter: "agent.use_target_network"
+    # list_values: [true, false]
 
 lunar_params:
   gravity: -10.0
   is_wind: true
-  wind: 8.0        # should be between 0.0 and 20.0 
-  turbulence: 1.0  # should be between 0.0 and 2.0
+  wind: 10.0        # should be between 0.0 and 20.0 
+  turbulence: 1.5  # should be between 0.0 and 2.0

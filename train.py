@@ -5,7 +5,7 @@ import numpy as np
 from collections import deque
 import matplotlib.pyplot as plt
 import time
-from agent import Agent
+from agent import Agent, device
 from omegaconf import OmegaConf
 import os, shutil
 
@@ -53,14 +53,14 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
     time_ref = time.time()
 
     for i_episode in range(1, total_episodes + 1):
-        state, info = env.reset(seed=current_seed+i_episode)
+        state, info = env.reset(seed=current_seed*total_episodes+i_episode)
         score = 0
         episode_q_vals = []
         episode_max_q_vals = []
         
         for t in range(config.training.max_t):
             # Get max predicted Q-value for the current state (for logging)
-            state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(agent.qnetwork_local.fc[0].weight.device)
+            state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(device)
             agent.qnetwork_local.eval()
             with torch.no_grad():
                 action_values = agent.qnetwork_local(state_tensor)
@@ -100,17 +100,17 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
 
         current_avg = np.mean(scores_window)
         
+        # Save best model based on moving average score
+        if current_avg > best_score and i_episode > 100:
+            best_score = current_avg
+            torch.save(agent.qnetwork_local.state_dict(),
+            f'{output_dir}/{_run_name}_local_best.pth')
+
         # Only print progress if we are running a standard training session (not an experiment)
         if n_episodes is None:
             print(f'\rEpisode {i_episode}\tAverage Score: {current_avg:.2f}', end="")
             if i_episode % 100 == 0:
                 print(f'\rEpisode {i_episode}\tAverage Score: {np.mean(scores_window):.2f}\tTime: {time.time() - time_ref:.0f} seconds = {(time.time() - time_ref)/60:.0f} minutes')
-                
-            # Save best model logic (only during normal training)
-            if current_avg > best_score and i_episode > 100:
-                best_score = current_avg
-                torch.save(agent.qnetwork_local.state_dict(),
-                        f'{output_dir}/{_run_name}_local_best.pth')
                 
             if i_episode % 250 == 0:
                 torch.save(agent.qnetwork_local.state_dict(),
@@ -123,10 +123,6 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
                 torch.save(agent.qnetwork_local.state_dict(), f'{output_dir}/{_run_name}_best.pth')
                 break
         else: 
-            if current_avg > best_score and i_episode > 100:
-                best_score = current_avg
-                torch.save(agent.qnetwork_local.state_dict(),
-                f'{output_dir}/{_run_name}_local_best.pth')
             if i_episode % 10 == 0:
                 print(f'\rEpisode {i_episode}\tAverage Score: {current_avg:.2f}', end="")
             if i_episode % 250 == 0:
@@ -192,4 +188,5 @@ if __name__ == '__main__':
 
     plt.tight_layout()
     plt.savefig(f"{output_dir}/{record_name}_training_curve.png", dpi=300, bbox_inches='tight')
-    plt.show()
+    if config.save_parameters.get('show_plots', True):
+        plt.show()
