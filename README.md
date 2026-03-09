@@ -1,25 +1,27 @@
 # Deep Q-Network (DQN) Lunar Lander
 
-![Version](https://img.shields.io/badge/version-1.2.0-success)
+![Version](https://img.shields.io/badge/version-1.2.7-success)
 ![Python](https://img.shields.io/badge/Python-3.13-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-Deep%20Learning-EE4C2C)
 ![Gymnasium](https://img.shields.io/badge/Gymnasium-RL%20Environment-lightgrey)
 
 An implementation of a Deep Q-Network (DQN) from scratch in PyTorch to solve the Gymnasium `LunarLander-v3` environment. 
 
-### The Best Agent in Action
+### Replay Buffer Length Effect (with wind and turbulence)
+![alt text](gif/ReplayBuffer_sweep_EnvSeed4_ModelSeed(1).gif)
 
-![Trained Agent landing smoothly](recent_agent_success.gif)
 
 ## Project Overview
-The goal of this project is to train an RL agent, which controls 3 engines, to navigate a lander to a landing pad.
+The goal of this project is to learn how to train an RL agent.
 
 This project implements the DQN algorithm using Pytorch, and on future version will explore more advanced methods for this task.
+
+It includes a thorough ablation study to study the effect of the concepts implemented here.
 
 ## Technical Implementation
 * **Framework:** PyTorch
 * **Architecture:**
-  * 3 Fully Connected Linear Layers (State Space: 8 -> 32 -> 32 -> Action Space: 4)
+  * 3 Fully Connected Linear Layers (State Space: 8 -> 128 -> 128 -> Action Space: 4)
   * ReLU Activation functions
 * **Action Selection:** $\epsilon$-greedy policy with decay.
 * **Optimization:** Mean Squared Error (MSE) Loss with Adam Optimizer.
@@ -60,8 +62,10 @@ This project implements the DQN algorithm using Pytorch, and on future version w
 The environment is considered "solved" when the agent achieves an average score of **200+ over 100 consecutive episodes**. 
 
 an example of score (total reward) vs. episode:
-![Training Curve](recent_training_example.png)
+![alt text](images/buffer_size_ablation_1-2-7/scores_comparison.png)
 
+and the testing performance:
+![alt text](images/buffer_size_ablation_1-2-7/test_scores_violin.png)
 
 ## Discussions
 
@@ -87,21 +91,23 @@ Discussions for each major update should be in the discussion folder.
 
   > Experiments script
 
+* 1.2.7 - Ablation Study
+
+  > Ablation study
+
+  > Better seed management  
+
+  > tau and lr schedulers
+
+  > Automated GIF generation
+
 ## How to Run This Project
 
 **1. Clone the repository and install using the requirement.txt file:**
 
-**2. Watch the trained agent play:**
-```
-python video_recorder.py
-```
+**2. Change config file as needed:**
 
-**3. Train a new agent:**
+**3. Run ablation study:** runs the ablation, test the results, and generate gifs. 
 ```
-python train.py
-```
-
-**run experiments**
-```
-python experiments.py
+python ablation_study.py
 ```

@@ -10,7 +10,7 @@ import shutil
 from agent import Agent
 from omegaconf import OmegaConf
 
-def make_gifs_for_study():
+def make_gifs_for_study(model_seed=0, run_type='ablation'):
     """
     Records videos for the ablation agents and stitches them into 2x2 GIFs.
     This is done for the first `n_gifs` seeds defined in the ablation study.
@@ -18,10 +18,16 @@ def make_gifs_for_study():
     # --- Configuration ---
     config = OmegaConf.load("config.yaml")
     study_name = config.ablation_study.ablation_name
-    ablation_seeds = config.ablation_study.seeds
     n_gifs = config.save_parameters.get('n_gifs', 1)
     version_str = config.project.version.replace('.', '-')
-    run_type = 'ablation'
+    run_type = run_type if run_type is not None else 'ablation'
+    match run_type:
+        case 'train':
+            model_seed = config.project.seed
+        case 'experiment':
+            model_seed = config.experiment.seeds[model_seed]
+        case 'ablation':
+            model_seed = config.ablation_study.seeds[model_seed]
     
     # Path to the summary folder for this study, where the GIF will be saved
     study_summary_dir = f"raw_results/{version_str}/{run_type}/{study_name}"
@@ -48,8 +54,8 @@ def make_gifs_for_study():
         ]
 
     for i in range(n_gifs):
-        seed_to_use = i
-        print(f"\n--- Generating GIF for seed: {seed_to_use} ---")
+        env_seed = i
+        print(f"\n--- Generating GIF for seed: {env_seed} ---")
 
         generated_clips = []
         configs_this_run = [cfg.copy() for cfg in configs_to_render_template]
@@ -60,7 +66,7 @@ def make_gifs_for_study():
             
             # Construct the path to the model file for the current seed
             record_name_base = f"{study_name}_{cfg['suffix']}"
-            record_name = f"{record_name_base}_seed{seed_to_use}"
+            record_name = f"{record_name_base}_seed{model_seed}"
             model_dir = f"raw_results/{version_str}/{run_type}/{record_name}"
             model_path = os.path.join(model_dir, f"{record_name}_local_best.pth")
 
@@ -82,7 +88,7 @@ def make_gifs_for_study():
             agent.qnetwork_local.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
             
             # Run one episode
-            state, _ = env.reset(seed=seed_to_use)
+            state, _ = env.reset(seed=env_seed)
             done = False
             score = 0
             frames = []
@@ -117,11 +123,11 @@ def make_gifs_for_study():
             generated_clips.append(clip)
 
         if not generated_clips:
-            print(f"No clips generated for seed {seed_to_use}. Skipping GIF creation.")
+            print(f"No clips generated for seed {model_seed}. Skipping GIF creation.")
             continue
 
         # --- 2. Stitch videos into a 2x2 GIF ---
-        print(f"\n--- Creating GIF for seed {seed_to_use} ---")
+        print(f"\n--- Creating GIF for seed {model_seed} ---")
         
         max_duration = max(c.duration for c in generated_clips) if generated_clips else 0
         final_duration = max_duration + 0.5
@@ -157,7 +163,7 @@ def make_gifs_for_study():
                 clips_with_text.append(black_clip)
 
         final_clip = clips_array([clips_with_text[:2], clips_with_text[2:]])
-        gif_path = os.path.join(study_summary_dir, f"{study_name}_seed{seed_to_use}_results.gif")
+        gif_path = os.path.join(study_summary_dir, f"{study_name}_EnvSeed{env_seed}_ModelSeed{model_seed}.gif")
         final_clip.write_gif(gif_path, fps=20)
         
         print(f"\nSuccess! GIF saved to {gif_path}")
