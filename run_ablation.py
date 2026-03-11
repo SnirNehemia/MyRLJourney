@@ -47,6 +47,10 @@ def plot_ablation_statistics(results_dict, title, y_label, output_path, win_cond
 
 def run_ablation_study():
     base_config = OmegaConf.load("config.yaml")
+
+    active_env_name = base_config.active_env
+    env_config = base_config.environments[active_env_name]
+
     n_episodes = base_config.ablation_study.get('n_episodes', 1000)
     study_name = base_config.ablation_study.get('ablation_name', 'ablation_study')
     seeds = base_config.ablation_study.get('seeds', [0])
@@ -54,14 +58,14 @@ def run_ablation_study():
     run_type = 'ablation'
 
     # This will be the main folder for the study's output plot
-    study_summary_dir = f"raw_results/{version_str}/{run_type}/{study_name}"
+    study_summary_dir = f"raw_results/{active_env_name}/{version_str}/{run_type}/{study_name}"
     os.makedirs(study_summary_dir, exist_ok=True)
 
     # --- Define configurations to test ---
     configs_to_test = []
-    is_sweep = base_config.ablation_study.get('sweep', {}).get('enabled', False)
+    study_type = base_config.ablation_study.get('study_type', 'component')
 
-    if is_sweep:
+    if study_type == 'sweep':
         print("--- Running Parameter Sweep Study ---")
         sweep_config = base_config.ablation_study.sweep
         param_to_sweep = sweep_config.parameter
@@ -71,17 +75,24 @@ def run_ablation_study():
         for value in sweep_values:
             configs_to_test.append({
                 'name': f"{param_name_for_label}={value}",
-                'is_sweep': True,
+                'study_type': 'sweep',
                 'param': param_to_sweep,
                 'value': value
             })
-    else:
+    elif study_type == 'dqn_variants':
+        print("--- Running DQN Variants Study ---")
+        configs_to_test = [
+            {'name': 'DQN (No Target)', 'study_type': 'dqn_variants', 'target': False, 'dqn_type': 'DQN'},
+            {'name': 'DQN (With Target)', 'study_type': 'dqn_variants', 'target': True, 'dqn_type': 'DQN'},
+            {'name': 'Double DQN', 'study_type': 'dqn_variants', 'target': True, 'dqn_type': 'DDQN'},
+        ]
+    else: # 'component'
         print("--- Running Component Ablation Study ---")
         configs_to_test = [
-            {'name': 'Full DQN (Buffer, Target)', 'is_sweep': False, 'buffer': True, 'target': True},
-            {'name': 'No Replay Buffer', 'is_sweep': False, 'buffer': False, 'target': True},
-            {'name': 'No Target Network', 'is_sweep': False, 'buffer': True, 'target': False},
-            {'name': 'Naive DQN (No Buffer, No Target)', 'is_sweep': False, 'buffer': False, 'target': False},
+            {'name': 'Full DQN (Buffer, Target)', 'study_type': 'component', 'buffer': True, 'target': True},
+            {'name': 'No Replay Buffer', 'study_type': 'component', 'buffer': False, 'target': True},
+            {'name': 'No Target Network', 'study_type': 'component', 'buffer': True, 'target': False},
+            {'name': 'Naive DQN (No Buffer, No Target)', 'study_type': 'component', 'buffer': False, 'target': False},
         ]
 
     results = {}
@@ -99,10 +110,14 @@ def run_ablation_study():
             run_config = base_config.copy()
             
             # Apply modifications for the current run
-            if cfg_mod.get('is_sweep', False):
+            current_study_type = cfg_mod['study_type']
+            if current_study_type == 'sweep':
                 OmegaConf.update(run_config, cfg_mod['param'], cfg_mod['value'])
-            else: # Component ablation
+            elif current_study_type == 'component':
                 run_config.agent.use_replay_buffer = cfg_mod['buffer']
+                run_config.agent.use_target_network = cfg_mod['target']
+            elif current_study_type == 'dqn_variants':
+                run_config.agent.DQN_type = cfg_mod['dqn_type']
                 run_config.agent.use_target_network = cfg_mod['target']
             
             # Define a unique name for this run's artifacts and folder
@@ -135,7 +150,7 @@ def run_ablation_study():
         title='Ablation Study: Agent Performance (Mean & Std Dev)',
         y_label='Average Score',
         output_path=f"{study_summary_dir}/scores_comparison.png",
-        win_condition=base_config.training.win_condition,
+        win_condition=env_config.win_condition,
         show_plots=show_plots
     )
 

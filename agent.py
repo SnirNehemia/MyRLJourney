@@ -28,6 +28,10 @@ class Agent():
         self.action_size = action_size
         self.seed = random.seed(seed if seed is not None else self.config.project.seed)
 
+        # Get active environment config
+        active_env_name = self.config.active_env
+        env_config = self.config.environments[active_env_name]
+
         # --- Agent Parameters from Config ---
         self.DQN_type = self.config.agent.DQN_type
         self.use_replay_buffer = self.config.agent.get('use_replay_buffer', True)
@@ -39,10 +43,10 @@ class Agent():
         self.update_every = self.config.agent.update_every
 
         # Q-Network (The "Local" brain that learns constantly)
-        self.qnetwork_local = QNetwork(state_size, action_size, seed if seed is not None else self.config.project.seed).to(device)
+        self.qnetwork_local = QNetwork(state_size, action_size, env_config.network.hidden_size, seed if seed is not None else self.config.project.seed).to(device)
         
         # Q-Network (The "Target" brain that stays stable)
-        self.qnetwork_target = QNetwork(state_size, action_size, seed if seed is not None else self.config.project.seed).to(device)
+        self.qnetwork_target = QNetwork(state_size, action_size, env_config.network.hidden_size, seed if seed is not None else self.config.project.seed).to(device)
         self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=self.lr)
 
         # Replay memory (We will define this class later)
@@ -112,22 +116,24 @@ class Agent():
         """
         states, actions, rewards, next_states, dones = experiences
 
+        # Determine the network to use for evaluating the next state's value
+        # For true "no target network", we use the local network itself.
+        eval_network = self.qnetwork_local if not self.use_target_network else self.qnetwork_target
+
         # ------------------- update local network ------------------- #
         
         # 1. Get Q values for next states from target model:
         match self.DQN_type:
             case "DQN":
                 # standard DQN:
-                Q_targets_next = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(1)
+                Q_targets_next = eval_network(next_states).detach().max(1)[0].unsqueeze(1)
                 # detach - to prevent backpropagation through the target network, since we only want to update the local network right now
                 # max(1)[0] - to get the maximum Q value for each next state across all possible actions (the [0] is because max returns a tuple of (values, indices))
                 # unsqueeze(1) - to add an extra dimension so that Q_targets_next has the same shape as rewards (which is [batch_size, 1]) for the next step of computing Q targets.
             case "DDQN":
                 # Double DQN:
                 next_action = self.qnetwork_local(next_states).detach().max(1)[1].unsqueeze(1)
-                # now we use the local network and choose the corresponding action rather than the Q value
-                Q_targets_next = self.qnetwork_target(next_states).detach().gather(1, next_action)
-                # and the target network to evaluate the actual Q value
+                Q_targets_next = eval_network(next_states).detach().gather(1, next_action)
 
         # 2. Compute Q targets for current states 
         # Formula: reward + (gamma * next_value)
@@ -148,7 +154,8 @@ class Agent():
         self.optimizer.step()
 
         # ------------------- update target network ------------------- #
-        self.soft_update(self.qnetwork_local, self.qnetwork_target, 1.0 if not self.use_target_network else tau)
+        if self.use_target_network:
+            self.soft_update(self.qnetwork_local, self.qnetwork_target, tau)
 
         return Q_targets.detach().mean().item()  # return Q for distribution research          
 

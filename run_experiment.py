@@ -10,7 +10,7 @@ import os
 
 from train import dqn
 
-def plot_comparison(dqn_var, ddqn_var, var_name, output_path, timer_start, show_plots=True):
+def plot_comparison(config, dqn_var, ddqn_var, var_name, output_path, timer_start, show_plots=True):
     # Convert lists to numpy arrays for easy math: shape will be (3, 800)
     dqn_results = np.array(dqn_var)
     ddqn_results = np.array(ddqn_var)
@@ -48,7 +48,8 @@ def plot_comparison(dqn_var, ddqn_var, var_name, output_path, timer_start, show_
                      ddqn_mean_smooth + moving_average(ddqn_std), 
                      color='darkorange', alpha=0.2)
 
-    plt.axhline(y=200, color='r', linestyle='--', label='Win Condition (200)')
+    env_config = config.environments[config.active_env]
+    plt.axhline(y=env_config.win_condition, color='r', linestyle='--', label=f'Win Condition ({env_config.win_condition})')
     plt.title(f'DQN vs Double DQN: Lunar Lander Performance: {var_name}')
     plt.xlabel('Episode #')
     plt.ylabel(f'Average {var_name}')
@@ -66,12 +67,13 @@ if __name__ == '__main__':
     episodes = config.experiment.n_episodes
     timer = time.time()
 
+    active_env_name = config.active_env
     version_str = config.project.version.replace('.', '-')
     experiment_name = config.save_parameters.run_name
     run_type = 'experiment'
 
     # This is the main directory for the experiment's summary plots
-    experiment_summary_dir = f"raw_results/{version_str}/{run_type}/{experiment_name}"
+    experiment_summary_dir = f"raw_results/{active_env_name}/{version_str}/{run_type}/{experiment_name}"
     os.makedirs(experiment_summary_dir, exist_ok=True)
     
     # Dictionaries to store results
@@ -100,9 +102,9 @@ if __name__ == '__main__':
     print("\n Generating comparison graph...")
     
     show_plots = config.save_parameters.get('show_plots', True)
-    plot_comparison(dqn_scores, ddqn_scores, 'Scores', 
+    plot_comparison(config, dqn_scores, ddqn_scores, 'Scores', 
                     output_path=f"{experiment_summary_dir}/scores_comparison.png", timer_start=timer,
                     show_plots=show_plots)
-    plot_comparison(dqn_qvals, ddqn_qvals, 'Q-Values',
+    plot_comparison(config, dqn_qvals, ddqn_qvals, 'Q-Values',
                     output_path=f"{experiment_summary_dir}/q_values_comparison.png", timer_start=timer,
                     show_plots=show_plots)

@@ -11,41 +11,38 @@ from agent import Agent
 from omegaconf import OmegaConf
 
 def make_gifs_for_study(model_seed=0, run_type='ablation'):
-    """
-    Records videos for the ablation agents and stitches them into 2x2 GIFs.
-    This is done for the first `n_gifs` seeds defined in the ablation study.
-    """
     # --- Configuration ---
     config = OmegaConf.load("config.yaml")
+    active_env_name = config.active_env
     study_name = config.ablation_study.ablation_name
     n_gifs = config.save_parameters.get('n_gifs', 1)
     version_str = config.project.version.replace('.', '-')
     run_type = run_type if run_type is not None else 'ablation'
-    match run_type:
-        case 'train':
-            model_seed = config.project.seed
-        case 'experiment':
-            model_seed = config.experiment.seeds[model_seed]
-        case 'ablation':
-            model_seed = config.ablation_study.seeds[model_seed]
     
     # Path to the summary folder for this study, where the GIF will be saved
-    study_summary_dir = f"raw_results/{version_str}/{run_type}/{study_name}"
+    study_summary_dir = f"raw_results/{active_env_name}/{version_str}/{run_type}/{study_name}"
     os.makedirs(study_summary_dir, exist_ok=True)
 
     # --- Determine which configurations to render ---
     configs_to_render_template = []
-    is_sweep = config.ablation_study.get('sweep', {}).get('enabled', False)
-    if is_sweep:
+    study_type = config.ablation_study.get('study_type', 'component')
+
+    if study_type == 'sweep':
         sweep_config = config.ablation_study.sweep
         param_to_sweep = sweep_config.parameter
         sweep_values = sweep_config['list_values']
         param_name_for_label = param_to_sweep.split('.')[-1]
         for value in sweep_values:
             name = f"{param_name_for_label}={value}"
-            suffix = name.replace('=', '_')
+            suffix = name.replace('=', '_').replace('.', 'p')
             configs_to_render_template.append({'name': name, 'suffix': suffix})
-    else:
+    elif study_type == 'dqn_variants':
+        configs_to_render_template = [
+            {'name': 'DQN (No Target)', 'suffix': 'DQN_No_Target'},
+            {'name': 'DQN (With Target)', 'suffix': 'DQN_With_Target'},
+            {'name': 'Double DQN', 'suffix': 'Double_DQN'},
+        ]
+    else: # 'component'
         configs_to_render_template = [
             {'name': 'Full DQN (Buffer, Target)', 'suffix': 'Full_DQN_Buffer_Target'},
             {'name': 'No Replay Buffer', 'suffix': 'No_Replay_Buffer'},
@@ -53,8 +50,9 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
             {'name': 'Naive DQN (No Buffer, No Target)', 'suffix': 'Naive_DQN_No_Buffer_No_Target'},
         ]
 
-    for i in range(n_gifs):
-        env_seed = i
+    for i in range(min(n_gifs, len(config.ablation_study.seeds))):
+        model_seed = config.ablation_study.seeds[i]
+        env_seed = model_seed # Use the same seed for model and env for consistency
         print(f"\n--- Generating GIF for seed: {env_seed} ---")
 
         generated_clips = []
@@ -67,7 +65,7 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
             # Construct the path to the model file for the current seed
             record_name_base = f"{study_name}_{cfg['suffix']}"
             record_name = f"{record_name_base}_seed{model_seed}"
-            model_dir = f"raw_results/{version_str}/{run_type}/{record_name}"
+            model_dir = f"raw_results/{active_env_name}/{version_str}/{run_type}/{record_name}"
             model_path = os.path.join(model_dir, f"{record_name}_local_best.pth")
 
             # Load the specific config file that was used for this training run
@@ -82,9 +80,14 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
                 continue
 
             # Initialize environment and agent
-            env = gym.make("LunarLander-v3", render_mode="rgb_array")
+            env_config_gif = run_config.environments[run_config.active_env]
+            env_params_gif = {}
+            if 'lunar_params' in env_config_gif:
+                env_params_gif = OmegaConf.to_container(env_config_gif.lunar_params)
+            env = gym.make(run_config.active_env, render_mode="rgb_array", **env_params_gif)
             
-            agent = Agent(state_size=8, action_size=4, config=run_config, seed=0)
+            env_config = run_config.environments[run_config.active_env]
+            agent = Agent(state_size=env_config.state_size, action_size=env_config.action_size, config=run_config, seed=0)
             agent.qnetwork_local.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
             
             # Run one episode
@@ -114,7 +117,13 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
                 last_reward = reward
             
             # Determine if landed successfully (Terminated naturally + Positive reward for landing)
-            cfg['landed_safely'] = terminated and not truncated and last_reward > 50
+            env_config = run_config.environments[run_config.active_env]
+            if run_config.active_env == "LunarLander-v3":
+                # For LunarLander, a safe landing is a non-crash termination with a positive final reward
+                cfg['succeeded'] = terminated and not truncated and last_reward > 50
+            else:
+                # For other envs like Acrobot, success is defined by reaching the score threshold
+                cfg['succeeded'] = score >= env_config.win_condition
             
             env.close()
             
@@ -135,7 +144,7 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
         # Apply freeze and add text labels
         clips_with_text = []
         for i, clip in enumerate(generated_clips):
-            landed = configs_this_run[i].get('landed_safely', False)
+            landed = configs_this_run[i].get('succeeded', False)
             border_color = (0, 255, 0) if landed else (255, 0, 0)
 
             freeze_dur = final_duration - clip.duration
@@ -163,7 +172,7 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
                 clips_with_text.append(black_clip)
 
         final_clip = clips_array([clips_with_text[:2], clips_with_text[2:]])
-        gif_path = os.path.join(study_summary_dir, f"{study_name}_EnvSeed{env_seed}_ModelSeed{model_seed}.gif")
+        gif_path = os.path.join(study_summary_dir, f"{study_name}_seed{model_seed}_comparison.gif")
         final_clip.write_gif(gif_path, fps=20)
         
         print(f"\nSuccess! GIF saved to {gif_path}")

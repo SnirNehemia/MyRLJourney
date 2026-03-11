@@ -2,11 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
     
-from omegaconf import OmegaConf
-config = OmegaConf.load("config.yaml")
-
 class QNetwork(nn.Module):
-    def __init__(self, input_size=config.network.input_size, output_size=config.network.output_size, seed=config.project.seed, hidden_size=config.network.hidden_size):
+    def __init__(self, input_size, output_size, hidden_size, seed):
         super(QNetwork, self).__init__()
         self.seed = torch.manual_seed(seed)
         self.fc = nn.ModuleList()

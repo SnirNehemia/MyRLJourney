@@ -1,45 +1,92 @@
 project:
-  version: "1.2.7"
-  env_name: "LunarLander-v3"
+  version: "1.3.0"
   seed: 0
 
+active_env: "LunarLander-v3" # Can be "LunarLander-v3" or "Acrobot-v1"
+
 save_parameters:
-  run_name: "ReplayBuffer_sweep"
+  run_name: "SAVE_NAME"
   n_gifs: 5
   show_plots: false # Set to true to display plots, false to only save them
 
-network:
-  input_size: 8
-  output_size: 4
-  hidden_size: [128, 128]
+environments:
+  "LunarLander-v3":
+    state_size: 8
+    action_size: 4
+    win_condition: 200.0
+    network:
+      hidden_size: [32, 32]
+    lunar_params:
+      gravity: -10.0
+      enable_wind: false
+      wind_power: 10.0
+      turbulence_power: 1.5
+
+  "Acrobot-v1":
+    state_size: 6
+    action_size: 3
+    win_condition: -100.0
+    network:
+      hidden_size: [64, 64]
+
+  "CartPole-v1":
+    state_size: 4
+    action_size: 2
+    win_condition: 475.0
+    network:
+      hidden_size: [32, 32]
+
+  "MountainCar-v0":
+    state_size: 2
+    action_size: 3
+    win_condition: -110.0 # Solved is avg score of -110.0 over 100 consecutive trials.
+    network:
+      hidden_size: [64, 64]
+
+  # NOTE: The environments below have CONTINUOUS action spaces.
+  # The current DQN agent is designed for DISCRETE actions and will NOT work.
+  # An algorithm like DDPG or SAC would be required.
+  "Pendulum-v1":
+    state_size: 3
+    action_size: 1 # Continuous action space with 1 dimension
+    win_condition: -150.0
+    network:
+      hidden_size: [64, 64]
+
+  "BipedalWalker-v3":
+    state_size: 24
+    action_size: 4 # Continuous action space with 4 dimensions
+    win_condition: 300.0
+    network:
+      hidden_size: [256, 256]
 
 agent:
-  buffer_size: 100000
+  buffer_size: 10000
   batch_size: 64
   gamma: 0.99
   tau: 0.005 # overrun by the tau scheduler
-  lr: 0.001 # overrun by the lr scheduler
-  update_every: 4
-  DQN_type: "DQN"
+  lr: 0.005 # overrun by the lr scheduler
+  update_every: 4 # For Acrobot, a smaller value like 1 might be better
+  DQN_type: "DQN" # This will be overridden by the ablation study
   use_replay_buffer: true
-  use_target_network: true
+  use_target_network: false
 
 training:
-  n_episodes: 2500
+  n_episodes: 500
   max_t: 1000
   eps_start: 1.0
   eps_end: 0.01
-  eps_decay: 0.999
+  eps_decay: 0.998 # Multiplicative decay factor per episode: 0.999 translates to one order of magnitude per 2000 episodes
   win_condition: 200.0
 
   # Learning Rate Scheduler
-  lr_start: 0.001      # Initial learning rate
-  lr_end: 0.0001        # Minimum learning rate
+  lr_start: 0.005      # Initial learning rate
+  lr_end: 0.005        # Minimum learning rate
   lr_decay: 0.998       # Multiplicative decay factor per episode: 0.999 translates to one order of magnitude per 2000 episodes
   
   # Tau Scheduler: the smaller, the slower it updates the target network
   tau_start: 0.005       # Initial tau for soft update
-  tau_end: 0.0005        # Minimum tau
+  tau_end: 0.005        # Minimum tau
   tau_decay: 0.999      # Multiplicative decay factor per episode: 0.999 translates to one order of magnitude per 2000 episodes
 
 experiment:
@@ -47,21 +94,14 @@ experiment:
   n_episodes: 3000
 
 ablation_study:
-  # The default (when sweep.enable=false), it runs a comaprison of buffer/no_buffer and target/no_target.
-  ablation_name: "ReplayBuffer_sweep"
+  study_type: "dqn_variants" # Can be :
+  # 'component' - to ablate specific components of the DQN algorithm, like the replay buffer or target network,
+  # 'sweep' - to sweep a specific hyperparameter across a range of values,
+  # 'dqn_variants' - to compare different DQN variants (DQN no target, DQN, Double DQN, Dueling DQN) under the same conditions.
+  ablation_name: "AB_NAME_4"
   seeds: [1, 2, 3]
-  n_episodes: 3000
+  n_episodes: 2000
   sweep:
-    enabled: true
-    # Sweep over a single parameter.
-    # The parameter path is dot-separated from the root of the config.
+    enabled: false
     parameter: "agent.buffer_size"
     list_values: [0, 100, 10000, 100000]
-    # parameter: "agent.use_target_network"
-    # list_values: [true, false]
-
-lunar_params:
-  gravity: -10.0
-  is_wind: true
-  wind: 10.0        # should be between 0.0 and 20.0 
-  turbulence: 1.5  # should be between 0.0 and 2.0

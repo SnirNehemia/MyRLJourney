@@ -14,11 +14,14 @@ config = OmegaConf.load("config.yaml")
 def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run_type='train'):
     """Deep Q-Learning training loop."""
 
+    active_env_name = config.active_env
+    env_config = config.environments[active_env_name]
+
     _version = config.project.version.replace(".", "-")
     _run_name = record_name if record_name is not None else config.save_parameters.run_name
 
     # Create a directory for the run
-    output_dir = f"raw_results/{_version}/{run_type}/{_run_name}"
+    output_dir = f"raw_results/{active_env_name}/{_version}/{run_type}/{_run_name}"
     os.makedirs(output_dir, exist_ok=True)
     # Save the exact config used for this run for reproducibility
     OmegaConf.save(config, os.path.join(output_dir, "run_config.yaml"))
@@ -31,13 +34,12 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
     total_episodes = n_episodes if n_episodes is not None else config.training.n_episodes
 
     # Initialize Environment and Agent
-    env = gym.make('LunarLander-v3',
-               enable_wind=config.lunar_params.is_wind, 
-               wind_power=config.lunar_params.wind, 
-               turbulence_power=config.lunar_params.turbulence,
-               gravity=config.lunar_params.gravity)
+    env_params = {}
+    if 'lunar_params' in env_config:
+        env_params = OmegaConf.to_container(env_config.lunar_params)
+    env = gym.make(active_env_name, **env_params)
     
-    agent = Agent(state_size=8, action_size=4, config=config, seed=current_seed)
+    agent = Agent(state_size=env_config.state_size, action_size=env_config.action_size, config=config, seed=current_seed)
     
     scores = []
     scores_window = deque(maxlen=100)
@@ -117,7 +119,7 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
                             f'{output_dir}/{_run_name}_{i_episode}-eps.pth')
                 
             # Check Win Condition
-            if current_avg >= config.training.win_condition:
+            if current_avg >= env_config.win_condition:
                 print(f'\nEnvironment solved in {i_episode-100:d} episodes!\tAverage Score: {np.mean(scores_window):.2f}')
                 # Save the trained neural network weights!
                 torch.save(agent.qnetwork_local.state_dict(), f'{output_dir}/{_run_name}_best.pth')
@@ -150,7 +152,9 @@ if __name__ == '__main__':
     seed = config.project.seed
     run_name = config.save_parameters.run_name
     record_name = f"{run_name}_seed{seed}"
-    output_dir = f"raw_results/{config.project.version.replace('.', '-')}/train/{record_name}"
+    active_env_name = config.active_env
+    version_str = config.project.version.replace('.', '-')
+    output_dir = f"raw_results/{active_env_name}/{version_str}/train/{record_name}"
 
     scores, q_values, avg_max_q_values = dqn(config, record_name=record_name, run_type='train', seed=seed)
     

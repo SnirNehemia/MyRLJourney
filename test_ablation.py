@@ -26,13 +26,14 @@ def test_network(model_path, config, n_episodes=100):
     print(f"  Testing model: {os.path.basename(model_path)}")
 
     # Initialize environment and agent
-    env = gym.make('LunarLander-v3',
-                   enable_wind=config.lunar_params.is_wind,
-                   wind_power=config.lunar_params.wind,
-                   turbulence_power=config.lunar_params.turbulence,
-                   gravity=config.lunar_params.gravity)
+    active_env_name = config.active_env
+    env_config = config.environments[active_env_name]
+    env_params = {}
+    if 'lunar_params' in env_config:
+        env_params = OmegaConf.to_container(env_config.lunar_params)
+    env = gym.make(active_env_name, **env_params)
     
-    agent = Agent(state_size=8, action_size=4, config=config, seed=0)
+    agent = Agent(state_size=env_config.state_size, action_size=env_config.action_size, config=config, seed=0)
     agent.qnetwork_local.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
     agent.qnetwork_local.eval() # Set model to evaluation mode
 
@@ -165,17 +166,18 @@ def test_ablation():
     statistical report and violin plots for visual comparison.
     """
     base_config = OmegaConf.load("config.yaml")
+    active_env_name = base_config.active_env
     study_name = base_config.ablation_study.get('ablation_name', 'ablation_study')
     first_seed = base_config.ablation_study.get('seeds', [0])[0]
     version_str = base_config.project.version.replace('.', '-')
     run_type = 'ablation'
 
-    study_summary_dir = f"raw_results/{version_str}/{run_type}/{study_name}"
+    study_summary_dir = f"raw_results/{active_env_name}/{version_str}/{run_type}/{study_name}"
     
     configs_to_test = []
-    is_sweep = base_config.ablation_study.get('sweep', {}).get('enabled', False)
+    study_type = base_config.ablation_study.get('study_type', 'component')
 
-    if is_sweep:
+    if study_type == 'sweep':
         print("--- Locating Models for Parameter Sweep Study ---")
         sweep_config = base_config.ablation_study.sweep
         param_to_sweep = sweep_config.parameter
@@ -183,7 +185,14 @@ def test_ablation():
         param_name_for_label = param_to_sweep.split('.')[-1]
         for value in sweep_values:
             configs_to_test.append({'name': f"{param_name_for_label}={value}"})
-    else:
+    elif study_type == 'dqn_variants':
+        print("--- Locating Models for DQN Variants Study ---")
+        configs_to_test = [
+            {'name': 'DQN (No Target)'},
+            {'name': 'DQN (With Target)'},
+            {'name': 'Double DQN'},
+        ]
+    else: # 'component'
         print("--- Locating Models for Component Ablation Study ---")
         configs_to_test = [
             {'name': 'Full DQN (Buffer, Target)'}, {'name': 'No Replay Buffer'},
@@ -196,7 +205,7 @@ def test_ablation():
         print(f"\nProcessing configuration: {cfg_mod['name']}")
         run_name_slug = cfg_mod['name'].replace(' ', '_').replace('(', '').replace(')', '').replace(',', '').replace('=', '_')
         record_name = f"{study_name}_{run_name_slug}_seed{first_seed}"
-        model_dir = f"raw_results/{version_str}/{run_type}/{record_name}"
+        model_dir = f"raw_results/{active_env_name}/{version_str}/{run_type}/{record_name}"
         model_path = os.path.join(model_dir, f"{record_name}_local_best.pth")
         run_config_path = os.path.join(model_dir, "run_config.yaml")
 
