@@ -43,10 +43,14 @@ class Agent():
         self.update_every = self.config.agent.update_every
 
         # Q-Network (The "Local" brain that learns constantly)
-        self.qnetwork_local = QNetwork(state_size, action_size, env_config.network.hidden_size, seed if seed is not None else self.config.project.seed).to(device)
+        self.qnetwork_local = QNetwork(state_size, action_size, env_config.network.hidden_size,
+                                       seed if seed is not None else self.config.project.seed,
+                                       is_dueling=config.agent.get('is_dueling', False)).to(device)
         
         # Q-Network (The "Target" brain that stays stable)
-        self.qnetwork_target = QNetwork(state_size, action_size, env_config.network.hidden_size, seed if seed is not None else self.config.project.seed).to(device)
+        self.qnetwork_target = QNetwork(state_size, action_size, env_config.network.hidden_size,
+                                       seed if seed is not None else self.config.project.seed,
+                                       is_dueling=config.agent.get('is_dueling', False)).to(device)
         self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=self.lr)
 
         # Replay memory (We will define this class later)

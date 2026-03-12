@@ -72,6 +72,12 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
             action = agent.act(state, eps)
             next_state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
+
+            # --- Sparse Reward Logic for LunarLander ---
+            is_lunar_lander_sparse = (active_env_name == "LunarLander-v3" and
+                                      env_config.get('sparse_reward', False))
+            if is_lunar_lander_sparse and not terminated:
+                reward = 0.0
             
             q_val = agent.step(state, action, reward, next_state, done, tau)
             if q_val is not None:

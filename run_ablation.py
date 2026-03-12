@@ -12,7 +12,16 @@ def plot_ablation_statistics(results_dict, title, y_label, output_path, win_cond
     """
     plt.style.use('seaborn-v0_8-whitegrid')
     plt.figure(figsize=(12, 8))
-    colors = plt.cm.viridis(np.linspace(0, 1, len(results_dict)))
+    colors = [
+        '#1f77b4',  # Muted Blue
+        '#ff7f0e',  # Safety Orange
+        '#2ca02c',  # Cooked Asparagus Green
+        '#d62728',  # Brick Red
+        '#9467bd',  # Muted Purple
+        '#8c564b',  # Chestnut Brown
+        '#e377c2',  # Raspberry Pink
+        '#7f7f7f',  # Middle Gray
+    ]
     
     for i, (name, runs) in enumerate(results_dict.items()):
         runs_np = np.array(runs)
