@@ -1,14 +1,116 @@
 import gymnasium as gym
 import torch
 from gymnasium.wrappers import RecordVideo
-from moviepy import VideoFileClip, clips_array, TextClip, CompositeVideoClip, vfx, ImageClip, concatenate_videoclips, ImageSequenceClip
+from moviepy import (VideoFileClip, clips_array, TextClip, CompositeVideoClip, 
+                            ImageClip, concatenate_videoclips, ImageSequenceClip) # Removed vfx
 import numpy as np
 from PIL import Image, ImageDraw
 import os
 import shutil
+import io
+import matplotlib.pyplot as plt
 
-from agent import Agent
+from agent import Agent, device
 from omegaconf import OmegaConf
+
+def add_border_to_numpy_frame(frame_array, border_size, color):
+    """Adds a border of specified size and color to a numpy image array.
+    Color should be an RGB tuple (e.g., (0, 0, 0) for black).
+    """
+    h, w, c = frame_array.shape
+    # Create a new array for the bordered frame, initialized with the border color
+    bordered_frame = np.full((h + 2 * border_size, w + 2 * border_size, c), color, dtype=frame_array.dtype)
+    # Paste the original frame into the center
+    bordered_frame[border_size:border_size + h, border_size:border_size + w] = frame_array
+    return bordered_frame
+
+def create_saliency_plot(saliency_values, labels, width, height):
+    """Creates a bar chart image from saliency values using a dark theme."""
+    plt.style.use('dark_background')
+    fig, ax = plt.subplots(figsize=(width / 100, height / 100), dpi=100)
+    
+    # Highlight the bar with the highest value
+    colors = ['cyan'] * len(labels)
+    if saliency_values.any(): # Ensure there's a max value to highlight
+        max_idx = np.argmax(saliency_values)
+        colors[max_idx] = 'magenta'
+    
+    y_pos = np.arange(len(labels))
+    ax.barh(y_pos, saliency_values, align='center', color=colors, height=0.6)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(labels, fontsize=9)
+    ax.invert_yaxis()
+    
+    ax.set_xticks([0, 0.5, 1])
+    ax.set_xticklabels(['0', '0.5', '1.0'], fontsize=8)
+    ax.set_xlim(0, 1)
+    
+    ax.set_xlabel('Normalized Importance', fontsize=9, color='lightgray')
+    ax.set_title('Input Saliency', fontsize=11, fontweight='bold', pad=10)
+    
+    fig.tight_layout(pad=1.5)
+    
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', transparent=False, facecolor=fig.get_facecolor())
+    buf.seek(0)
+    plot_img = Image.open(buf).convert('RGB')
+    plot_array = np.array(plot_img)
+    plt.close(fig)
+    
+    return plot_array
+
+def create_q_value_plot(q_values, action_labels, chosen_action_idx, width, height, use_fake_actions=False, real_action_size=4):
+    """Creates a bar chart for Q-values of each action."""
+    plt.style.use('dark_background')
+    fig, ax = plt.subplots(figsize=(width / 100, height / 100), dpi=100)
+
+    # --- Process Q-values and labels for fake actions ---
+    if use_fake_actions and len(q_values) > real_action_size:
+        real_q_values = q_values[:real_action_size]
+        fake_q_values = q_values[real_action_size:]
+        avg_fake_q = np.mean(fake_q_values)
+        
+        processed_q_values = np.append(real_q_values, avg_fake_q)
+        
+        processed_labels = action_labels[:real_action_size]
+        processed_labels.append('Fake Actions')
+        
+        # Adjust chosen action index if it was a fake action
+        if chosen_action_idx >= real_action_size:
+            processed_chosen_action_idx = real_action_size # The last bar is now 'Fake Actions'
+        else:
+            processed_chosen_action_idx = chosen_action_idx
+    else:
+        processed_q_values = q_values
+        processed_labels = action_labels
+        processed_chosen_action_idx = chosen_action_idx
+
+    colors = ['deepskyblue'] * len(processed_labels)
+    colors[processed_chosen_action_idx] = 'lime'
+
+    y_pos = np.arange(len(processed_labels))
+    bars = ax.barh(y_pos, processed_q_values, align='center', color=colors, height=0.5)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(processed_labels, fontsize=9)
+    ax.invert_yaxis()
+
+    ax.set_xlabel('Q-Value', fontsize=9, color='lightgray')
+    ax.set_title('Action Q-Values', fontsize=11, fontweight='bold', pad=10)
+    
+    fixed_min_q = -200
+    fixed_max_q = 200
+    ax.set_xlim(fixed_min_q, fixed_max_q)
+
+    fig.tight_layout(pad=1.5)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', transparent=False, facecolor=fig.get_facecolor())
+    buf.seek(0)
+    plot_img = Image.open(buf).convert('RGB')
+    plot_array = np.array(plot_img)
+    plt.close(fig)
+
+    return plot_array
 
 def make_gifs_for_study(model_seed=0, run_type='ablation'):
     # --- Configuration ---
@@ -17,6 +119,7 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
     study_name = config.ablation_study.ablation_name
     n_gifs = config.save_parameters.get('n_gifs', 1)
     version_str = config.project.version.replace('.', '-')
+    add_saliency = config.save_parameters.get('add_saliency_to_gif', False)
     run_type = run_type if run_type is not None else 'ablation'
     
     # Path to the summary folder for this study, where the GIF will be saved
@@ -87,9 +190,30 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
             env = gym.make(run_config.active_env, render_mode="rgb_array", **env_params_gif)
             
             env_config = run_config.environments[run_config.active_env]
-            agent = Agent(state_size=env_config.state_size, action_size=env_config.action_size, config=run_config, seed=0)
+
+            # --- Fake Actions Logic ---
+            real_action_size = env_config.action_size
+            agent_action_size = real_action_size
+            use_fake_actions = (run_config.active_env == "LunarLander-v3" and 
+                                env_config.get('use_fake_actions', False))
+            if use_fake_actions:
+                num_fake = env_config.get('num_fake_actions', 6)
+                agent_action_size += num_fake
+
+            agent = Agent(state_size=env_config.state_size, action_size=agent_action_size, config=run_config, seed=0)
             agent.qnetwork_local.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
             
+            # Get state labels for saliency plot if applicable
+            saliency_labels = None
+            action_labels = None
+            if add_saliency:
+                saliency_labels = env_config.get('state_labels', [f'Input {i}' for i in range(env_config.state_size)])
+                action_labels = env_config.get('action_labels', [f'Action {i}' for i in range(real_action_size)])
+                if use_fake_actions:
+                    num_fake = env_config.get('num_fake_actions', 6)
+                    for i in range(num_fake):
+                        action_labels.append(f'Fake {i+1}')
+
             # Run one episode
             state, _ = env.reset(seed=env_seed)
             done = False
@@ -100,18 +224,73 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
             t = 0
             while not done and t < config.training.max_t:
                 t += 1
-                # 1. Render frame
-                frame = env.render()
                 
-                # 2. Draw current score on frame
-                pil_img = Image.fromarray(frame)
+                # 1. Render environment frame and draw score
+                env_frame = env.render()
+                pil_img = Image.fromarray(env_frame)
                 draw = ImageDraw.Draw(pil_img)
                 draw.text((10, 10), f"Score: {score:.1f}", fill=(255, 255, 255))
-                frames.append(np.array(pil_img))
+                frame_with_score = np.array(pil_img)
 
-                # 3. Step environment
-                action = agent.act(state, eps=0.0) # Use greedy policy
-                state, reward, terminated, truncated, _ = env.step(action)
+                # Add black border to the environment frame
+                bordered_env_frame = add_border_to_numpy_frame(frame_with_score, 2, (0, 0, 0))
+                frame_h = bordered_env_frame.shape[0]
+
+                # --- Get Action and Saliency ---
+                state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(device)
+                state_tensor.requires_grad = True
+
+                agent.qnetwork_local.eval()
+                action_values = agent.qnetwork_local(state_tensor)
+                agent.qnetwork_local.train()
+
+                agent_action = torch.argmax(action_values.detach()).item()
+
+                # Map agent action to real environment action
+                env_action = agent_action
+                if use_fake_actions and agent_action >= real_action_size:
+                    env_action = 0 # Map all fake actions to 'No-Op'
+
+
+                saliency_plot_img, q_plot_img = None, None
+
+                if add_saliency and saliency_labels:
+                    max_q_value = action_values[0, env_action]
+                    
+                    agent.qnetwork_local.zero_grad()
+                    max_q_value.backward()
+                    
+                    saliency = state_tensor.grad.abs().squeeze(0).cpu().numpy()
+                    
+                    # normalize the saliency values
+                    if np.max(saliency) > 0:
+                        saliency /= np.max(saliency)
+                    else:
+                        saliency = np.zeros_like(saliency)
+                    
+                    # Calculate dynamic plot height based on environment frame
+                    plot_h = frame_h // 2
+                    plot_h_rem = frame_h % 2
+                    
+                    # Saliency plot
+                    saliency_plot_img = create_saliency_plot(saliency, saliency_labels, 300, plot_h)
+
+                    # Create Q-value plot
+                    q_values_np = action_values.detach().cpu().squeeze(0).numpy()
+                    q_plot_img = create_q_value_plot(q_values_np, action_labels, agent_action, 300, plot_h + plot_h_rem,
+                                                     use_fake_actions=use_fake_actions, real_action_size=real_action_size)
+
+                # 2. Combine with saliency plot if it exists
+                if saliency_plot_img is not None and q_plot_img is not None:
+                    # Stack plots vertically, then attach to the side of the env render
+                    plots_panel = np.vstack((saliency_plot_img, q_plot_img))
+                    combined_frame = np.hstack((bordered_env_frame, plots_panel))
+                    frames.append(combined_frame)
+                else:
+                    frames.append(bordered_env_frame) # Still add border even without saliency
+
+                # 3. Step environment with the chosen action
+                state, reward, terminated, truncated, _ = env.step(env_action)
                 done = terminated or truncated
                 score += reward
                 last_reward = reward
@@ -148,15 +327,16 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
             border_color = (0, 255, 0) if landed else (255, 0, 0)
 
             freeze_dur = final_duration - clip.duration
-            
-            # 1. Playing part (Black border)
-            playing_part = clip.with_effects([vfx.Margin(left=2, right=2, top=2, bottom=2, color=(0,0,0))])
+            # The 'clip' already has the black border from the frame processing loop
+            playing_part = clip 
             
             # 2. Frozen part (Colored border)
             if freeze_dur > 0:
                 last_frame = clip.get_frame(clip.duration - 0.01)
-                frozen_part = ImageClip(last_frame, duration=freeze_dur)
-                frozen_part = frozen_part.with_effects([vfx.Margin(left=2, right=2, top=2, bottom=2, color=border_color)])
+                # Manually add the colored border to the last frame
+                bordered_last_frame = add_border_to_numpy_frame(last_frame, 2, border_color)
+                frozen_part = ImageClip(bordered_last_frame, duration=freeze_dur)
+                
                 full_clip = concatenate_videoclips([playing_part, frozen_part])
             else:
                 full_clip = playing_part

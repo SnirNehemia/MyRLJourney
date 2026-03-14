@@ -8,6 +8,7 @@ save_parameters:
   run_name: "SAVE_NAME"
   n_gifs: 5
   show_plots: false # Set to true to display plots, false to only save them
+  add_saliency_to_gif: true # Set to true to add a saliency plot to the GIF
 
 environments:
   "LunarLander-v3":
@@ -15,14 +16,18 @@ environments:
     action_size: 4
     win_condition: 200.0
     network:
-      hidden_size: [128, 128]
+      hidden_size: [64, 64]
+    state_labels: ['X-pos', 'Y-pos', 'X-vel', 'Y-vel', 'Angle', 'Ang-vel', 'Leg1', 'Leg2']
+    action_labels: ['No-Op', 'Left', 'Main', 'Right']
+    use_fake_actions: false
+    num_fake_actions: 16
     sparse_reward: false
       
     lunar_params:
       gravity: -10.0
-      enable_wind: true
-      wind_power: 20.0
-      turbulence_power: 2.0
+      enable_wind: false
+      wind_power: 5.0
+      turbulence_power: 1.5
 
   "Acrobot-v1":
     state_size: 6
@@ -63,7 +68,7 @@ environments:
       hidden_size: [256, 256]
 
 agent:
-  buffer_size: 10000
+  buffer_size: 50000
   batch_size: 128
   gamma: 0.99
   tau: 0.005 # overrun by the tau scheduler
@@ -78,8 +83,8 @@ training:
   n_episodes: 500
   max_t: 1000
   eps_start: 1.0
-  eps_end: 0.01
-  eps_decay: 0.998 # Multiplicative decay factor per episode: 0.999 translates to one order of magnitude per 2000 episodes
+  eps_end: 0.001
+  eps_decay: 0.99 # Multiplicative decay factor per episode: 0.999 translates to one order of magnitude per 2000 episodes
 
   # Learning Rate Scheduler
   lr_start: 0.005      # Initial learning rate
@@ -100,9 +105,9 @@ ablation_study:
   # 'component' - to ablate specific components of the DQN algorithm, like the replay buffer or target network,
   # 'sweep' - to sweep a specific hyperparameter across a range of values,
   # 'dqn_variants' - to compare different DQN variants (DQN no target, DQN, Double DQN, Dueling DQN) under the same conditions.
-  ablation_name: "Dueling_vs_DQN_Hard_Env2"
-  seeds: [0, 1, 2] # Using a few seeds will give more robust results
-  n_episodes: 3000 # Increased episodes as the problem is harder
+  ablation_name: "Dueling_vs_DQN_NoWind_64x64Net_epsDecay_NoDummies"
+  seeds: [0] # Using a few seeds will give more robust results
+  n_episodes: 1500 # Increased episodes as the problem is harder
   sweep:
     enabled: true
     parameter: "agent.is_dueling"

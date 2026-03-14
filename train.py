@@ -17,6 +17,16 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
     active_env_name = config.active_env
     env_config = config.environments[active_env_name]
 
+    # --- Fake Actions Logic ---
+    real_action_size = env_config.action_size
+    agent_action_size = real_action_size
+    use_fake_actions = (active_env_name == "LunarLander-v3" and 
+                        env_config.get('use_fake_actions', False))
+    if use_fake_actions:
+        num_fake = env_config.get('num_fake_actions', 6)
+        agent_action_size += num_fake
+        print(f"INFO: Using {num_fake} fake actions. Agent action space: {agent_action_size}")
+
     _version = config.project.version.replace(".", "-")
     _run_name = record_name if record_name is not None else config.save_parameters.run_name
 
@@ -39,7 +49,7 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
         env_params = OmegaConf.to_container(env_config.lunar_params)
     env = gym.make(active_env_name, **env_params)
     
-    agent = Agent(state_size=env_config.state_size, action_size=env_config.action_size, config=config, seed=current_seed)
+    agent = Agent(state_size=env_config.state_size, action_size=agent_action_size, config=config, seed=current_seed)
     
     scores = []
     scores_window = deque(maxlen=100)
@@ -69,8 +79,14 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
             agent.qnetwork_local.train()
             episode_max_q_vals.append(torch.max(action_values).item())
 
-            action = agent.act(state, eps)
-            next_state, reward, terminated, truncated, info = env.step(action)
+            agent_action = agent.act(state, eps)
+
+            # Map agent action to real environment action
+            env_action = agent_action
+            if use_fake_actions and agent_action >= real_action_size:
+                env_action = 0 # Map all fake actions to 'No-Op'
+
+            next_state, reward, terminated, truncated, info = env.step(env_action)
             done = terminated or truncated
 
             # --- Sparse Reward Logic for LunarLander ---
@@ -79,7 +95,8 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
             if is_lunar_lander_sparse and not terminated:
                 reward = 0.0
             
-            q_val = agent.step(state, action, reward, next_state, done, tau)
+            # The agent.step call needs the original agent_action to learn correctly
+            q_val = agent.step(state, agent_action, reward, next_state, done, tau)
             if q_val is not None:
                 episode_q_vals.append(q_val)
                 

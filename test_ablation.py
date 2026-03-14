@@ -33,7 +33,16 @@ def test_network(model_path, config, n_episodes=100):
         env_params = OmegaConf.to_container(env_config.lunar_params)
     env = gym.make(active_env_name, **env_params)
     
-    agent = Agent(state_size=env_config.state_size, action_size=env_config.action_size, config=config, seed=0)
+    # --- Fake Actions Logic ---
+    real_action_size = env_config.action_size
+    agent_action_size = real_action_size
+    use_fake_actions = (active_env_name == "LunarLander-v3" and 
+                        env_config.get('use_fake_actions', False))
+    if use_fake_actions:
+        num_fake = env_config.get('num_fake_actions', 6)
+        agent_action_size += num_fake
+
+    agent = Agent(state_size=env_config.state_size, action_size=agent_action_size, config=config, seed=0)
     agent.qnetwork_local.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
     agent.qnetwork_local.eval() # Set model to evaluation mode
 
@@ -53,8 +62,14 @@ def test_network(model_path, config, n_episodes=100):
             episode_max_q_vals.append(torch.max(action_values).item())
 
             # Act greedily
-            action = agent.act(state, eps=0.0)
-            next_state, reward, terminated, truncated, _ = env.step(action)
+            agent_action = agent.act(state, eps=0.0)
+
+            # Map agent action to real environment action
+            env_action = agent_action
+            if use_fake_actions and agent_action >= real_action_size:
+                env_action = 0 # Map all fake actions to 'No-Op'
+
+            next_state, reward, terminated, truncated, _ = env.step(env_action)
             done = terminated or truncated
             
             state = next_state
