@@ -13,7 +13,7 @@ def plot_ablation_statistics(results_dict, title, y_label, output_path, win_cond
     plt.style.use('seaborn-v0_8-whitegrid')
     plt.figure(figsize=(12, 8))
     colors = [
-        '#1f77b4',  # Muted Blue
+        "#9421ce",  # Muted Blue
         '#ff7f0e',  # Safety Orange
         '#2ca02c',  # Cooked Asparagus Green
         '#d62728',  # Brick Red

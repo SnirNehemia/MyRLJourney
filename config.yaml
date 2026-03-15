@@ -19,8 +19,10 @@ environments:
       hidden_size: [64, 64]
     state_labels: ['X-pos', 'Y-pos', 'X-vel', 'Y-vel', 'Angle', 'Ang-vel', 'Leg1', 'Leg2']
     action_labels: ['No-Op', 'Left', 'Main', 'Right']
-    use_fake_actions: false
+    use_fake_actions: true
     num_fake_actions: 16
+    fake_action_maps_to: 0 # The real action that fake actions should map to
+    q_plot_range: [-200, 200] # For GIF Q-value plot
     sparse_reward: false
       
     lunar_params:
@@ -49,6 +51,12 @@ environments:
     win_condition: -110.0 # Solved is avg score of -110.0 over 100 consecutive trials.
     network:
       hidden_size: [64, 64]
+    state_labels: ['Position', 'Velocity']
+    action_labels: ['Push Left', 'No Push', 'Push Right']
+    use_fake_actions: true
+    num_fake_actions: 7
+    fake_action_maps_to: 1 # The real action that fake actions should map to
+    q_plot_range: [-200, 0] # For GIF Q-value plot
 
   # NOTE: The environments below have CONTINUOUS action spaces.
   # The current DQN agent is designed for DISCRETE actions and will NOT work.
@@ -84,7 +92,7 @@ training:
   max_t: 1000
   eps_start: 1.0
   eps_end: 0.001
-  eps_decay: 0.99 # Multiplicative decay factor per episode: 0.999 translates to one order of magnitude per 2000 episodes
+  eps_decay: 0.995 # Multiplicative decay factor per episode: 0.999 translates to one order of magnitude per 2000 episodes
 
   # Learning Rate Scheduler
   lr_start: 0.005      # Initial learning rate
@@ -105,9 +113,9 @@ ablation_study:
   # 'component' - to ablate specific components of the DQN algorithm, like the replay buffer or target network,
   # 'sweep' - to sweep a specific hyperparameter across a range of values,
   # 'dqn_variants' - to compare different DQN variants (DQN no target, DQN, Double DQN, Dueling DQN) under the same conditions.
-  ablation_name: "Dueling_vs_DQN_NoWind_64x64Net_epsDecay_NoDummies"
-  seeds: [0] # Using a few seeds will give more robust results
-  n_episodes: 1500 # Increased episodes as the problem is harder
+  ablation_name: "32x32Net_7Dummies_3Seeds"
+  seeds: [0, 1, 2] # Using a few seeds will give more robust results
+  n_episodes: 3000 # Increased episodes as the problem is harder
   sweep:
     enabled: true
     parameter: "agent.is_dueling"

@@ -36,10 +36,9 @@ def test_network(model_path, config, n_episodes=100):
     # --- Fake Actions Logic ---
     real_action_size = env_config.action_size
     agent_action_size = real_action_size
-    use_fake_actions = (active_env_name == "LunarLander-v3" and 
-                        env_config.get('use_fake_actions', False))
+    use_fake_actions = env_config.get('use_fake_actions', False)
     if use_fake_actions:
-        num_fake = env_config.get('num_fake_actions', 6)
+        num_fake = env_config.get('num_fake_actions', 0)
         agent_action_size += num_fake
 
     agent = Agent(state_size=env_config.state_size, action_size=agent_action_size, config=config, seed=0)
@@ -67,7 +66,8 @@ def test_network(model_path, config, n_episodes=100):
             # Map agent action to real environment action
             env_action = agent_action
             if use_fake_actions and agent_action >= real_action_size:
-                env_action = 0 # Map all fake actions to 'No-Op'
+                map_to_action = env_config.get('fake_action_maps_to', 0)
+                env_action = map_to_action
 
             next_state, reward, terminated, truncated, _ = env.step(env_action)
             done = terminated or truncated

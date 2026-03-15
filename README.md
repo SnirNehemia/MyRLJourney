@@ -1,6 +1,6 @@
 # Deep Q-Network (DQN) Lunar Lander
 
-![Version](https://img.shields.io/badge/version-1.3.1-success)
+![Version](https://img.shields.io/badge/version-1.3.2-success)
 ![Python](https://img.shields.io/badge/Python-3.13-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-Deep%20Learning-EE4C2C)
 ![Gymnasium](https://img.shields.io/badge/Gymnasium-RL%20Environment-lightgrey)
@@ -25,6 +25,7 @@ It includes a thorough ablation study to study the effect of the concepts implem
 * **core concepts implemented:**
   * DQN 
   * DDQN
+  * Dueling DQN
 
 ### Key RL Features Included:
 1. **Experience Replay Buffer:** Breaks the correlation of sequential observations by randomly sampling past experiences (State, Action, Reward, Next State) to train the network.
@@ -82,6 +83,12 @@ Discussions for each major update should be in the discussion folder.
 * 1.3.1 - More environments
 
   > Added support for `CartPole-v1`, `MountainCar-v0`, `Pendulum-v1`, and `BipedalWalker-v3`.
+
+* 1.3.2 - Dueling DQN
+
+  > Implemented Dueling DQN architecture.
+
+  > Added "fake actions" experiment
 
 ## How to Run This Project
 

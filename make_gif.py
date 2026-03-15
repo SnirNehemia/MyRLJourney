@@ -59,7 +59,7 @@ def create_saliency_plot(saliency_values, labels, width, height):
     
     return plot_array
 
-def create_q_value_plot(q_values, action_labels, chosen_action_idx, width, height, use_fake_actions=False, real_action_size=4):
+def create_q_value_plot(q_values, action_labels, chosen_action_idx, width, height, use_fake_actions=False, real_action_size=4, q_plot_range=[-200, 200]):
     """Creates a bar chart for Q-values of each action."""
     plt.style.use('dark_background')
     fig, ax = plt.subplots(figsize=(width / 100, height / 100), dpi=100)
@@ -97,8 +97,7 @@ def create_q_value_plot(q_values, action_labels, chosen_action_idx, width, heigh
     ax.set_xlabel('Q-Value', fontsize=9, color='lightgray')
     ax.set_title('Action Q-Values', fontsize=11, fontweight='bold', pad=10)
     
-    fixed_min_q = -200
-    fixed_max_q = 200
+    fixed_min_q, fixed_max_q = q_plot_range
     ax.set_xlim(fixed_min_q, fixed_max_q)
 
     fig.tight_layout(pad=1.5)
@@ -194,10 +193,9 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
             # --- Fake Actions Logic ---
             real_action_size = env_config.action_size
             agent_action_size = real_action_size
-            use_fake_actions = (run_config.active_env == "LunarLander-v3" and 
-                                env_config.get('use_fake_actions', False))
+            use_fake_actions = env_config.get('use_fake_actions', False)
             if use_fake_actions:
-                num_fake = env_config.get('num_fake_actions', 6)
+                num_fake = env_config.get('num_fake_actions', 0)
                 agent_action_size += num_fake
 
             agent = Agent(state_size=env_config.state_size, action_size=agent_action_size, config=run_config, seed=0)
@@ -210,7 +208,7 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
                 saliency_labels = env_config.get('state_labels', [f'Input {i}' for i in range(env_config.state_size)])
                 action_labels = env_config.get('action_labels', [f'Action {i}' for i in range(real_action_size)])
                 if use_fake_actions:
-                    num_fake = env_config.get('num_fake_actions', 6)
+                    num_fake = env_config.get('num_fake_actions', 0)
                     for i in range(num_fake):
                         action_labels.append(f'Fake {i+1}')
 
@@ -249,13 +247,14 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
                 # Map agent action to real environment action
                 env_action = agent_action
                 if use_fake_actions and agent_action >= real_action_size:
-                    env_action = 0 # Map all fake actions to 'No-Op'
+                    map_to_action = env_config.get('fake_action_maps_to', 0)
+                    env_action = map_to_action
 
 
                 saliency_plot_img, q_plot_img = None, None
 
                 if add_saliency and saliency_labels:
-                    max_q_value = action_values[0, env_action]
+                    max_q_value = action_values[0, agent_action]
                     
                     agent.qnetwork_local.zero_grad()
                     max_q_value.backward()
@@ -277,8 +276,10 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
 
                     # Create Q-value plot
                     q_values_np = action_values.detach().cpu().squeeze(0).numpy()
+                    q_plot_range = env_config.get('q_plot_range', [-200, 200])
                     q_plot_img = create_q_value_plot(q_values_np, action_labels, agent_action, 300, plot_h + plot_h_rem,
-                                                     use_fake_actions=use_fake_actions, real_action_size=real_action_size)
+                                                     use_fake_actions=use_fake_actions, real_action_size=real_action_size,
+                                                     q_plot_range=q_plot_range)
 
                 # 2. Combine with saliency plot if it exists
                 if saliency_plot_img is not None and q_plot_img is not None:

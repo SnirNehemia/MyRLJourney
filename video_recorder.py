@@ -55,7 +55,16 @@ def record_videos_for_main_run():
 
         # 3. Initialize the agent (architecture must match our training setup)
         env_config = config.environments[active_env_name]
-        agent = Agent(state_size=env_config.state_size, action_size=env_config.action_size, config=config, seed=0)
+
+        # --- Fake Actions Logic ---
+        real_action_size = env_config.action_size
+        agent_action_size = real_action_size
+        use_fake_actions = env_config.get('use_fake_actions', False)
+        if use_fake_actions:
+            num_fake = env_config.get('num_fake_actions', 0)
+            agent_action_size += num_fake
+
+        agent = Agent(state_size=env_config.state_size, action_size=agent_action_size, config=config, seed=0)
 
         # 4. Load the trained "brain" weights from our checkpoint file
         agent.qnetwork_local.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
@@ -67,8 +76,14 @@ def record_videos_for_main_run():
         done = False
 
         while not done:
-            action = agent.act(state, eps=0.0)
-            state, reward, terminated, truncated, info = env.step(action)
+            agent_action = agent.act(state, eps=0.0)
+
+            # Map agent action to real environment action
+            env_action = agent_action
+            if use_fake_actions and agent_action >= real_action_size:
+                map_to_action = env_config.get('fake_action_maps_to', 0)
+                env_action = map_to_action
+            state, reward, terminated, truncated, info = env.step(env_action)
             done = terminated or truncated
             score += reward
 
