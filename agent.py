@@ -8,6 +8,8 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
+from torchrl.data import LazyMemmapStorage, PrioritizedReplayBuffer, TensorDictPrioritizedReplayBuffer
+from tensordict import TensorDict
 # Check if GPU is available (makes training 10x faster)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -42,6 +44,15 @@ class Agent():
         self.lr = self.config.agent.lr
         self.update_every = self.config.agent.update_every
 
+        # PER parameters
+        self.use_per = self.config.agent.get('use_per', False)
+        if self.use_per:
+            self.per_alpha = self.config.agent.get('per_alpha', 0.6)
+            self.per_beta_start = self.config.agent.get('per_beta_start', 0.4)
+            self.per_beta_end = self.config.agent.get('per_beta_end', 1.0)
+            self.per_beta_frames = self.config.agent.get('per_beta_frames', 100000)
+            self.per_beta = self.per_beta_start
+            self.frame_count = 0
         # Q-Network (The "Local" brain that learns constantly)
         self.qnetwork_local = QNetwork(state_size, action_size, env_config.network.hidden_size,
                                        seed if seed is not None else self.config.project.seed,
@@ -53,10 +64,19 @@ class Agent():
                                        is_dueling=config.agent.get('is_dueling', False)).to(device)
         self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=self.lr)
 
-        # Replay memory (We will define this class later)
+        # Replay memory
         _buffer_size = self.buffer_size if self.use_replay_buffer else 1
         _batch_size = self.batch_size if self.use_replay_buffer else 1
-        self.memory = ReplayBuffer(action_size, _buffer_size, _batch_size, seed if seed is not None else self.config.project.seed)
+        
+        if self.use_per:
+            self.memory = TensorDictPrioritizedReplayBuffer(
+                alpha=self.per_alpha,
+                beta=self.per_beta_start,
+                priority_key="td_error",
+                storage=LazyMemmapStorage(max_size=_buffer_size) # Define storage and max size
+)
+        else:
+            self.memory = ReplayBuffer(action_size, _buffer_size, _batch_size, seed if seed is not None else self.config.project.seed)
         
         # Initialize time step (for updating every UPDATE_EVERY steps)
         self.t_step = 0
@@ -74,16 +94,42 @@ class Agent():
             tau (float): interpolation parameter for soft update
         """
         # Save experience in replay memory
-        self.memory.add(state, action, reward, next_state, done)
-        
+        if self.use_per:
+            # torchrl's PrioritizedReplayBuffer expects TensorDict
+            # It automatically sets initial priority to max_priority or 1.0
+            exp = TensorDict({
+                "state": torch.as_tensor(state, dtype=torch.float32),
+                "action": torch.as_tensor(action, dtype=torch.long),
+                "reward": torch.as_tensor(reward, dtype=torch.float32),
+                "next_state": torch.as_tensor(next_state, dtype=torch.float32),
+                "done": torch.as_tensor(done, dtype=torch.bool),
+            }, batch_size=[]) 
+            self.memory.add(exp)
+            self.frame_count += 1
+            # Anneal beta 
+            self.per_beta = min(self.per_beta_end, self.per_beta_start + self.frame_count * (self.per_beta_end - self.per_beta_start) / self.per_beta_frames)
+        else:
+            self.memory.add(state, action, reward, next_state, done)
+
+
         # Learn every UPDATE_EVERY time steps.
         self.t_step = (self.t_step + 1) % self.update_every
         if self.t_step == 0:
             # If enough samples are available in memory, get random subset and learn
             if len(self.memory) >= self.batch_size:
-                experiences = self.memory.sample()
-                q_val = self.learn(experiences, self.gamma, tau)
-                return q_val   
+                if self.use_per:
+                    # Sample from PER buffer, get experiences, indices, and IS weights
+                    sampled_data = self.memory.sample(batch_size=self.batch_size)
+                    q_val, td_error = self.learn(sampled_data, self.gamma, tau, per_indices=sampled_data["index"], per_weights=sampled_data["priority_weight"])
+                    # Update priorities in PER buffer
+                    sampled_data["td_error"] = td_error.abs().squeeze().cpu().numpy()
+                    self.memory.sampler._beta = self.per_beta # Update beta in the sampler
+                    self.memory.update_priority(sampled_data["index"], sampled_data["td_error"] + 1e-6)
+                    return q_val # TODO: shpuld I return the td-error?, td_error # Return both when PER is active
+                else: # Not using PER
+                    experiences = self.memory.sample()
+                    q_val, _ = self.learn(experiences, self.gamma, tau) # _ is None here
+                    return q_val # Only return q_val when PER is not active
         return None # Return None if we didn't learn on this step
     
     def act(self, state, eps=0.):
@@ -109,17 +155,26 @@ class Agent():
         else:
             return random.choice(np.arange(self.action_size))  # Pick Random
 
-    def learn(self, experiences, gamma, tau):
+    def learn(self, experiences, gamma, tau, per_indices=None, per_weights=None):
         """Update value parameters using given batch of experience tuples.
 
         Params
         ======
-            experiences (Tuple[torch.Tensor]): tuple of (s, a, r, s', done) tuples 
+            experiences (Tuple[torch.Tensor] or TensorDict): tuple of (s, a, r, s', done) tuples
             gamma (float): discount factor
             tau (float): interpolation parameter for soft update
+            per_indices (torch.Tensor, optional): Indices of sampled experiences for PER.
+            per_weights (torch.Tensor, optional): Importance Sampling weights for PER.
         """
-        states, actions, rewards, next_states, dones = experiences
-
+        if self.use_per:
+            states = experiences['state'].to(device)
+            actions = experiences['action'].to(device).unsqueeze(-1) # actions need to be (batch_size, 1)
+            rewards = experiences['reward'].to(device).unsqueeze(-1) # rewards need to be (batch_size, 1)
+            next_states = experiences['next_state'].to(device)
+            dones = experiences['done'].to(device).unsqueeze(-1) # dones need to be (batch_size, 1)
+        else:
+            states, actions, rewards, next_states, dones = experiences
+        
         # Determine the network to use for evaluating the next state's value
         # For true "no target network", we use the local network itself.
         eval_network = self.qnetwork_local if not self.use_target_network else self.qnetwork_target
@@ -140,18 +195,21 @@ class Agent():
                 Q_targets_next = eval_network(next_states).detach().gather(1, next_action)
 
         # 2. Compute Q targets for current states 
-        # Formula: reward + (gamma * next_value)
-        # If 'done' is 1 (game over), there is no next value, so we multiply by (1 - done)
-        # we use the target network to compute the next value to keep the learning stable
-        Q_targets = rewards + (gamma * Q_targets_next * (1 - dones))
+        Q_targets = rewards + (gamma * Q_targets_next * (1 - dones.float())) # .float() for boolean dones
 
         # 3. Get expected Q values from local model
         # gather(1, actions) extracts the Q-value for the specific action we actually took
         Q_expected = self.qnetwork_local(states).gather(1, actions)
 
         # 4. Compute loss (MSE: Mean Squared Error)
-        loss = F.mse_loss(Q_expected, Q_targets)
+        td_error = Q_targets - Q_expected # Calculate TD error before loss for PER
         
+        if self.use_per and per_weights is not None:
+            # Apply Importance Sampling weights
+            loss = (per_weights.to(device).unsqueeze(-1) * F.mse_loss(Q_expected, Q_targets, reduction='none')).mean()
+        else:
+            loss = F.mse_loss(Q_expected, Q_targets)
+
         # 5. Minimize the loss (Backpropagation)
         self.optimizer.zero_grad()
         loss.backward()
@@ -161,7 +219,10 @@ class Agent():
         if self.use_target_network:
             self.soft_update(self.qnetwork_local, self.qnetwork_target, tau)
 
-        return Q_targets.detach().mean().item()  # return Q for distribution research          
+        if self.use_per:
+            return Q_targets.detach().mean().item(), td_error.detach()
+        else:
+            return Q_targets.detach().mean().item(), None
 
     def update_lr(self, lr):
         """Update learning rate for the optimizer"""

@@ -1,12 +1,14 @@
 # Deep Q-Network (DQN) Lunar Lander
 
-![Version](https://img.shields.io/badge/version-1.3.2-success)
+![Version](https://img.shields.io/badge/version-1.4.0-success)
 ![Python](https://img.shields.io/badge/Python-3.13-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-Deep%20Learning-EE4C2C)
 ![Gymnasium](https://img.shields.io/badge/Gymnasium-RL%20Environment-lightgrey)
 
 An implementation of a Deep Q-Network (DQN) from scratch in PyTorch to solve the Gymnasium environments. 
-
+## Some examples of ablation studies done here:
+### PER effect:
+![alt text](PER_test_smallerBatch_longerRun_seed14_comparison.gif)
 ### Replay Buffer Length Effect (with wind and turbulence)
 ![alt text](gif/ReplayBuffer_sweep_EnvSeed4_ModelSeed(1).gif)
 
@@ -26,6 +28,7 @@ It includes a thorough ablation study to study the effect of the concepts implem
   * DQN 
   * DDQN
   * Dueling DQN
+  * Prioritized Experience Replay (PER)
 
 ### Key RL Features Included:
 1. **Experience Replay Buffer:** Breaks the correlation of sequential observations by randomly sampling past experiences (State, Action, Reward, Next State) to train the network.
@@ -90,6 +93,9 @@ Discussions for each major update should be in the discussion folder.
 
   > Added "fake actions" experiment
 
+* 1.4.0 - Prioritized Experience Replay (PER)
+
+  > Implemented Prioritized Experience Replay (PER) for more efficient learning.
 ## How to Run This Project
 
 **1. Clone the repository and install using the requirement.txt file:**

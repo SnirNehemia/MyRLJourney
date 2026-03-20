@@ -206,6 +206,8 @@ def test_ablation():
             {'name': 'DQN (No Target)'},
             {'name': 'DQN (With Target)'},
             {'name': 'Double DQN'},
+            {'name': 'Dueling DDQN'},
+            {'name': 'Dueling DDQN + PER'},
         ]
     else: # 'component'
         print("--- Locating Models for Component Ablation Study ---")

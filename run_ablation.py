@@ -91,9 +91,11 @@ def run_ablation_study():
     elif study_type == 'dqn_variants':
         print("--- Running DQN Variants Study ---")
         configs_to_test = [
-            {'name': 'DQN (No Target)', 'study_type': 'dqn_variants', 'target': False, 'dqn_type': 'DQN'},
-            {'name': 'DQN (With Target)', 'study_type': 'dqn_variants', 'target': True, 'dqn_type': 'DQN'},
-            {'name': 'Double DQN', 'study_type': 'dqn_variants', 'target': True, 'dqn_type': 'DDQN'},
+            {'name': 'DQN (No Target)', 'study_type': 'dqn_variants', 'target': False, 'dqn_type': 'DQN', 'is_dueling': False, 'use_per': False},
+            {'name': 'DQN (With Target)', 'study_type': 'dqn_variants', 'target': True, 'dqn_type': 'DQN', 'is_dueling': False, 'use_per': False},
+            {'name': 'Double DQN', 'study_type': 'dqn_variants', 'target': True, 'dqn_type': 'DDQN', 'is_dueling': False, 'use_per': False},
+            {'name': 'Dueling DDQN', 'study_type': 'dqn_variants', 'target': True, 'dqn_type': 'DDQN', 'is_dueling': True, 'use_per': False},
+            {'name': 'Dueling DDQN + PER', 'study_type': 'dqn_variants', 'target': True, 'dqn_type': 'DDQN', 'is_dueling': True, 'use_per': True},
         ]
     else: # 'component'
         print("--- Running Component Ablation Study ---")
@@ -128,6 +130,8 @@ def run_ablation_study():
             elif current_study_type == 'dqn_variants':
                 run_config.agent.DQN_type = cfg_mod['dqn_type']
                 run_config.agent.use_target_network = cfg_mod['target']
+                run_config.agent.is_dueling = cfg_mod.get('is_dueling', False)
+                run_config.agent.use_per = cfg_mod.get('use_per', False)
             
             # Define a unique name for this run's artifacts and folder
             record_name = f"{study_name}_{cfg_mod['name'].replace(' ', '_').replace('(', '').replace(')', '').replace(',', '').replace('=', '_')}_seed{seed}"

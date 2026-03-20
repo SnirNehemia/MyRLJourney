@@ -98,6 +98,11 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
             
             # The agent.step call needs the original agent_action to learn correctly
             q_val = agent.step(state, agent_action, reward, next_state, done, tau)
+            # # use this if i need to return td-error
+            # if agent.use_per:
+            #     q_val, _ = agent.step(state, agent_action, reward, next_state, done, tau)
+            # else:
+            #     q_val = agent.step(state, agent_action, reward, next_state, done, tau)
             if q_val is not None:
                 episode_q_vals.append(q_val)
                 

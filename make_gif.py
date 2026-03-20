@@ -143,6 +143,8 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
             {'name': 'DQN (No Target)', 'suffix': 'DQN_No_Target'},
             {'name': 'DQN (With Target)', 'suffix': 'DQN_With_Target'},
             {'name': 'Double DQN', 'suffix': 'Double_DQN'},
+            {'name': 'Dueling DDQN', 'suffix': 'Dueling_DDQN'},
+            {'name': 'Dueling DDQN + PER', 'suffix': 'Dueling_DDQN_PER'},
         ]
     else: # 'component'
         configs_to_render_template = [

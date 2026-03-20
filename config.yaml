@@ -1,8 +1,8 @@
 project:
-  version: "1.3.1"
+  version: "1.4.0"
   seed: 0
 
-active_env: "LunarLander-v3" 
+active_env: "MountainCar-v0" 
 
 save_parameters:
   run_name: "SAVE_NAME"
@@ -16,20 +16,20 @@ environments:
     action_size: 4
     win_condition: 200.0
     network:
-      hidden_size: [64, 64]
+      hidden_size: [128, 128]
     state_labels: ['X-pos', 'Y-pos', 'X-vel', 'Y-vel', 'Angle', 'Ang-vel', 'Leg1', 'Leg2']
     action_labels: ['No-Op', 'Left', 'Main', 'Right']
     use_fake_actions: true
-    num_fake_actions: 16
+    num_fake_actions: 6
     fake_action_maps_to: 0 # The real action that fake actions should map to
     q_plot_range: [-200, 200] # For GIF Q-value plot
     sparse_reward: false
       
     lunar_params:
       gravity: -10.0
-      enable_wind: false
+      enable_wind: true
       wind_power: 5.0
-      turbulence_power: 1.5
+      turbulence_power: 0.5
 
   "Acrobot-v1":
     state_size: 6
@@ -53,10 +53,10 @@ environments:
       hidden_size: [64, 64]
     state_labels: ['Position', 'Velocity']
     action_labels: ['Push Left', 'No Push', 'Push Right']
-    use_fake_actions: true
-    num_fake_actions: 7
+    use_fake_actions: false
+    num_fake_actions: 2
     fake_action_maps_to: 1 # The real action that fake actions should map to
-    q_plot_range: [-200, 0] # For GIF Q-value plot
+    q_plot_range: [-200, 50] # For GIF Q-value plot
 
   # NOTE: The environments below have CONTINUOUS action spaces.
   # The current DQN agent is designed for DISCRETE actions and will NOT work.
@@ -76,8 +76,8 @@ environments:
       hidden_size: [256, 256]
 
 agent:
-  buffer_size: 50000
-  batch_size: 128
+  buffer_size: 1000000
+  batch_size: 32
   gamma: 0.99
   tau: 0.005 # overrun by the tau scheduler
   lr: 0.005 # overrun by the lr scheduler
@@ -86,9 +86,14 @@ agent:
   use_replay_buffer: true
   use_target_network: true
   is_dueling: true
+  use_per: true # Enable Prioritized Experience Replay
+  per_alpha: 0.7 # PER alpha parameter (priority exponent)
+  per_beta_start: 0.4 # PER beta parameter (initial IS weight exponent)
+  per_beta_end: 1.0 # PER beta parameter (final IS weight exponent)
+  per_beta_frames: 10000 # Number of frames over which beta anneals
 
 training:
-  n_episodes: 500
+  n_episodes: 2000
   max_t: 1000
   eps_start: 1.0
   eps_end: 0.001
@@ -113,10 +118,10 @@ ablation_study:
   # 'component' - to ablate specific components of the DQN algorithm, like the replay buffer or target network,
   # 'sweep' - to sweep a specific hyperparameter across a range of values,
   # 'dqn_variants' - to compare different DQN variants (DQN no target, DQN, Double DQN, Dueling DQN) under the same conditions.
-  ablation_name: "32x32Net_7Dummies_3Seeds"
-  seeds: [0, 1, 2] # Using a few seeds will give more robust results
-  n_episodes: 3000 # Increased episodes as the problem is harder
+  ablation_name: "PER_test_smallerBatch_longerRun"
+  seeds: [10,11,12,13,14] # Using a few seeds will give more robust results
+  n_episodes: 5000 # Increased episodes as the problem is harder
   sweep:
     enabled: true
-    parameter: "agent.is_dueling"
+    parameter: "agent.use_per"
     list_values: [false, true]
