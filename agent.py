@@ -132,28 +132,37 @@ class Agent():
                     return q_val # Only return q_val when PER is not active
         return None # Return None if we didn't learn on this step
     
-    def act(self, state, eps=0.):
+    def act(self, state, exploration_param=0.):
         """Returns actions for given state as per current policy.
         
         Params
         ======
             state (array_like): current state
-            eps (float): epsilon, for epsilon-greedy action selection
+            exploration_param (float): exploration parameter (epsilon or temperature)
         """
         state = torch.from_numpy(state).float().unsqueeze(0).to(device)
         
-        # Turn off training mode (we are just playing, not learning right now)
         self.qnetwork_local.eval()
         with torch.no_grad():
             action_values = self.qnetwork_local(state)
-        # Turn training mode back on
         self.qnetwork_local.train()
 
-        # Epsilon-greedy action selection
-        if random.random() > eps:
-            return np.argmax(action_values.cpu().data.numpy()) # Pick Best
+        strategy = self.config.training.exploration.strategy
+
+        if strategy == 'epsilon_greedy':
+            # Epsilon-greedy action selection
+            if random.random() > exploration_param: # exploration_param is epsilon
+                return np.argmax(action_values.cpu().data.numpy())
+            else:
+                return random.choice(np.arange(self.action_size))
+        elif strategy == 'boltzmann':
+            # Boltzmann exploration
+            temperature = max(exploration_param, 1e-8) # exploration_param is temperature, ensure not zero
+            probs = F.softmax(action_values / temperature, dim=1).cpu().data.numpy().squeeze()
+            return np.random.choice(np.arange(self.action_size), p=probs)
         else:
-            return random.choice(np.arange(self.action_size))  # Pick Random
+            # Default to greedy for testing (exploration_param=0) or unknown strategies
+            return np.argmax(action_values.cpu().data.numpy())
 
     def learn(self, experiences, gamma, tau, per_indices=None, per_weights=None):
         """Update value parameters using given batch of experience tuples.

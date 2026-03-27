@@ -55,8 +55,19 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
     scores_window = deque(maxlen=100)
     q_values_history = [] 
     avg_max_q_history = []
-    
-    eps = config.training.eps_start
+
+    # --- Exploration Parameters ---
+    exploration_cfg = config.training.exploration
+    strategy = exploration_cfg.strategy
+    if strategy == 'epsilon_greedy':
+        exploration_param = exploration_cfg.epsilon.start
+        exploration_end = exploration_cfg.epsilon.end
+        exploration_decay = exploration_cfg.epsilon.decay
+    else: # boltzmann
+        exploration_param = exploration_cfg.boltzmann.temperature_start
+        exploration_end = exploration_cfg.boltzmann.temperature_end
+        exploration_decay = exploration_cfg.boltzmann.temperature_decay
+
     lr = config.training.get('lr_start', config.agent.lr)
     tau = config.training.get('tau_start', config.agent.tau)
     agent.update_lr(lr)
@@ -79,7 +90,7 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
             agent.qnetwork_local.train()
             episode_max_q_vals.append(torch.max(action_values).item())
 
-            agent_action = agent.act(state, eps)
+            agent_action = agent.act(state, exploration_param)
 
             # Map agent action to real environment action
             env_action = agent_action
@@ -124,7 +135,7 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
         else:
             avg_max_q_history.append(0 if len(avg_max_q_history)==0 else avg_max_q_history[-1])
 
-        eps = max(config.training.eps_end, config.training.eps_decay * eps) 
+        exploration_param = max(exploration_end, exploration_decay * exploration_param)
         lr = max(config.training.get('lr_end', 0.0), config.training.get('lr_decay', 1.0) * lr)
         tau = max(config.training.get('tau_end', config.agent.tau), config.training.get('tau_decay', 1.0) * tau)
         agent.update_lr(lr)

@@ -61,7 +61,7 @@ def test_network(model_path, config, n_episodes=100):
             episode_max_q_vals.append(torch.max(action_values).item())
 
             # Act greedily
-            agent_action = agent.act(state, eps=0.0)
+            agent_action = agent.act(state, exploration_param=0.0)
 
             # Map agent action to real environment action
             env_action = agent_action

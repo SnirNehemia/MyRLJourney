@@ -1,6 +1,6 @@
 # Deep Q-Network (DQN) Lunar Lander
 
-![Version](https://img.shields.io/badge/version-1.4.0-success)
+![Version](https://img.shields.io/badge/version-1.4.1-success)
 ![Python](https://img.shields.io/badge/Python-3.13-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-Deep%20Learning-EE4C2C)
 ![Gymnasium](https://img.shields.io/badge/Gymnasium-RL%20Environment-lightgrey)
@@ -9,9 +9,10 @@ An implementation of a Deep Q-Network (DQN) from scratch in PyTorch to solve the
 ## Some examples of ablation studies done here:
 ### PER effect:
 ![alt text](PER_test_smallerBatch_longerRun_seed14_comparison.gif)
-### Replay Buffer Length Effect (with wind and turbulence)
+### Replay Buffer Length Effect (with wind and turbulence):
 ![alt text](gif/ReplayBuffer_sweep_EnvSeed4_ModelSeed(1).gif)
-
+### Exploration methods:
+![alt text](gif/ForReadme/Exploration_noFakeActions_moreSeeds_seed4_comparison.gif)
 
 ## Project Overview
 The goal of this project is to learn how to train an RL agent.
@@ -22,7 +23,7 @@ It includes a thorough ablation study to study the effect of the concepts implem
 
 ## Technical Implementation
 * **Framework:** PyTorch
-* **Action Selection:** $\epsilon$-greedy policy with decay.
+* **Action Selection:** $\epsilon$-greedy or Boltzmann exploration, with decay schedules.
 * **Optimization:** Mean Squared Error (MSE) Loss with Adam Optimizer.
 * **core concepts implemented:**
   * DQN 
@@ -96,6 +97,11 @@ Discussions for each major update should be in the discussion folder.
 * 1.4.0 - Prioritized Experience Replay (PER)
 
   > Implemented Prioritized Experience Replay (PER) for more efficient learning.
+
+* 1.4.1 - Added Boltzmann exploration
+
+  > Now we can choose between epsilon-greedy and Boltzmann exploration.
+
 ## How to Run This Project
 
 **1. Clone the repository and install using the requirement.txt file:**

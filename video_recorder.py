@@ -76,7 +76,7 @@ def record_videos_for_main_run():
         done = False
 
         while not done:
-            agent_action = agent.act(state, eps=0.0)
+            agent_action = agent.act(state, exploration_param=0.0)
 
             # Map agent action to real environment action
             env_action = agent_action

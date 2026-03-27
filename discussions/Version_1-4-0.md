@@ -57,7 +57,7 @@ This implementation leverages `torchrl.data.PrioritizedReplayBuffer` for efficie
 sometimes it wins by a lot:
 ![alt text](PER_test_smallerBatch_longerRun_seed12_comparison.gif)
 
-and sometimes it's a close compatition:
+and sometimes it's a close competition:
 ![alt text](PER_test_smallerBatch_longerRun_seed14_comparison.gif)
 
 But it seems like the PER version often wins:

@@ -1,8 +1,8 @@
 project:
-  version: "1.4.0"
+  version: "1.4.1"
   seed: 0
 
-active_env: "MountainCar-v0" 
+active_env: "Acrobot-v1" 
 
 save_parameters:
   run_name: "SAVE_NAME"
@@ -37,6 +37,9 @@ environments:
     win_condition: -100.0
     network:
       hidden_size: [64, 64]
+    use_fake_actions: false
+    num_fake_actions: 6
+    fake_action_maps_to: 0 # The real action that fake actions should map to
 
   "CartPole-v1":
     state_size: 4
@@ -44,6 +47,9 @@ environments:
     win_condition: 475.0
     network:
       hidden_size: [32, 32]
+    use_fake_actions: false
+    num_fake_actions: 3
+    fake_action_maps_to: 0 # The real action that fake actions should map to
 
   "MountainCar-v0":
     state_size: 2
@@ -93,12 +99,18 @@ agent:
   per_beta_frames: 10000 # Number of frames over which beta anneals
 
 training:
-  n_episodes: 2000
-  max_t: 1000
-  eps_start: 1.0
-  eps_end: 0.001
-  eps_decay: 0.995 # Multiplicative decay factor per episode: 0.999 translates to one order of magnitude per 2000 episodes
-
+  n_episodes: 1000
+  max_t: 500
+  exploration:
+    strategy: "epsilon_greedy" # "epsilon_greedy" or "boltzmann"
+    epsilon:
+      start: 1.0
+      end: 0.001
+      decay: 0.995 # Multiplicative decay factor per episode
+    boltzmann:
+      temperature_start: 1.0
+      temperature_end: 0.5
+      temperature_decay: 0.9995 # Multiplicative decay factor per episode
   # Learning Rate Scheduler
   lr_start: 0.005      # Initial learning rate
   lr_end: 0.0005        # Minimum learning rate
@@ -118,10 +130,10 @@ ablation_study:
   # 'component' - to ablate specific components of the DQN algorithm, like the replay buffer or target network,
   # 'sweep' - to sweep a specific hyperparameter across a range of values,
   # 'dqn_variants' - to compare different DQN variants (DQN no target, DQN, Double DQN, Dueling DQN) under the same conditions.
-  ablation_name: "PER_test_smallerBatch_longerRun"
-  seeds: [10,11,12,13,14] # Using a few seeds will give more robust results
-  n_episodes: 5000 # Increased episodes as the problem is harder
+  ablation_name: "Exploration"
+  seeds: [1, 2] # Using a few seeds will give more robust results
+  n_episodes: 1000 # Increased episodes as the problem is harder
   sweep:
     enabled: true
-    parameter: "agent.use_per"
-    list_values: [false, true]
+    parameter: "training.exploration.strategy"
+    list_values: ["epsilon_greedy", "boltzmann"]
