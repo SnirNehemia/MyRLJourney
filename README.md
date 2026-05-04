@@ -13,6 +13,8 @@ An implementation of a Deep Q-Network (DQN) from scratch in PyTorch to solve the
 ![alt text](gif/ReplayBuffer_sweep_EnvSeed4_ModelSeed(1).gif)
 ### Exploration methods:
 ![alt text](gif/ForReadme/Exploration_noFakeActions_moreSeeds_seed4_comparison.gif)
+### DQN beats REINFORCE:
+![alt text](comparison_results/agent_comparison.gif)
 
 ## Project Overview
 The goal of this project is to learn how to train an RL agent.
@@ -101,6 +103,10 @@ Discussions for each major update should be in the discussion folder.
 * 1.4.1 - Added Boltzmann exploration
 
   > Now we can choose between epsilon-greedy and Boltzmann exploration.
+
+* 1.5.0 - Added REINFORCE
+
+  > Added REINFORCE algorithm
 
 ## How to Run This Project
 

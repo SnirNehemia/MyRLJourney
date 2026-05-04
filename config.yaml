@@ -99,7 +99,7 @@ agent:
   per_beta_frames: 10000 # Number of frames over which beta anneals
 
 training:
-  n_episodes: 1000
+  n_episodes: 500
   max_t: 500
   exploration:
     strategy: "epsilon_greedy" # "epsilon_greedy" or "boltzmann"
