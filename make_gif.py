@@ -5,13 +5,22 @@ from moviepy import (VideoFileClip, clips_array, TextClip, CompositeVideoClip,
                             ImageClip, concatenate_videoclips, ImageSequenceClip) # Removed vfx
 import numpy as np
 from PIL import Image, ImageDraw
-import os
+import os, sys
 import shutil
 import io
 import matplotlib.pyplot as plt
 
 from agent import Agent, device
+try:
+    from agent import A2CAgent
+except ImportError:
+    pass
 from omegaconf import OmegaConf
+try:
+    from PIL import ImageFont
+except ImportError:
+    # Pillow version issue, try to proceed without font
+    ImageFont = None
 
 def add_border_to_numpy_frame(frame_array, border_size, color):
     """Adds a border of specified size and color to a numpy image array.
@@ -111,11 +120,76 @@ def create_q_value_plot(q_values, action_labels, chosen_action_idx, width, heigh
 
     return plot_array
 
+def create_actor_policy_plot(policy_values, action_labels, chosen_action_idx, width, height, is_continuous=False):
+    """Creates a bar chart for the actor's policy output."""
+    plt.style.use('dark_background')
+    fig, ax = plt.subplots(figsize=(width / 100, height / 100), dpi=100)
+
+    colors = ['deepskyblue'] * len(policy_values)
+    if not is_continuous and chosen_action_idx < len(colors):
+        colors[chosen_action_idx] = 'lime'
+
+    y_pos = np.arange(len(action_labels))
+    ax.barh(y_pos, policy_values, align='center', color=colors, height=0.5)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(action_labels, fontsize=9)
+    ax.invert_yaxis()
+
+    ax.set_xlabel('Probability' if not is_continuous else 'Action Value', fontsize=9, color='lightgray')
+    ax.set_title('Actor Policy', fontsize=11, fontweight='bold', pad=10)
+    
+    if is_continuous:
+        ax.set_xlim(-1.1, 1.1)
+    else:
+        ax.set_xlim(0, 1.05)
+
+    fig.tight_layout(pad=1.5)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', transparent=False, facecolor=fig.get_facecolor())
+    buf.seek(0)
+    plot_img = Image.open(buf).convert('RGB')
+    plot_array = np.array(plot_img)
+    plt.close(fig)
+
+    return plot_array
+
+def create_critic_value_plot(state_value, width, height, value_range=[-500, 0]):
+    """Creates a bar chart for the critic's state value."""
+    plt.style.use('dark_background')
+    fig, ax = plt.subplots(figsize=(width / 100, height / 100), dpi=100)
+
+    ax.barh([0], [state_value], align='center', color='magenta', height=0.3)
+    ax.set_yticks([])
+    
+    ax.set_xlabel('Estimated State Value', fontsize=9, color='lightgray')
+    ax.set_title('Critic Value', fontsize=11, fontweight='bold', pad=10)
+    
+    fixed_min_v, fixed_max_v = value_range
+    ax.set_xlim(fixed_min_v, fixed_max_v)
+
+    # Add the value as text on the plot
+    text_x_pos = fixed_min_v + (fixed_max_v - fixed_min_v) * 0.02
+    ax.text(text_x_pos, 0, f'Value: {state_value:.2f}', va='center', color='white', fontsize=10, fontweight='bold')
+
+    fig.tight_layout(pad=1.5)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', transparent=False, facecolor=fig.get_facecolor())
+    buf.seek(0)
+    plot_img = Image.open(buf).convert('RGB')
+    plot_array = np.array(plot_img)
+    plt.close(fig)
+
+    return plot_array
+
 def make_gifs_for_study(model_seed=0, run_type='ablation'):
     # --- Configuration ---
     config = OmegaConf.load("config.yaml")
+    ablation_config = config.ablation_study
+
     active_env_name = config.active_env
-    study_name = config.ablation_study.ablation_name
+    study_name = ablation_config.study_name
     n_gifs = config.save_parameters.get('n_gifs', 1)
     version_str = config.project.version.replace('.', '-')
     add_saliency = config.save_parameters.get('add_saliency_to_gif', False)
@@ -126,36 +200,10 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
     os.makedirs(study_summary_dir, exist_ok=True)
 
     # --- Determine which configurations to render ---
-    configs_to_render_template = []
-    study_type = config.ablation_study.get('study_type', 'component')
+    configs_to_render_template = [{'name': exp['name'], 'suffix': exp['name'].replace(' ', '_').replace('(', '').replace(')', '').replace(',', '').replace('=', '_')} for exp in ablation_config.experiments]
 
-    if study_type == 'sweep':
-        sweep_config = config.ablation_study.sweep
-        param_to_sweep = sweep_config.parameter
-        sweep_values = sweep_config['list_values']
-        param_name_for_label = param_to_sweep.split('.')[-1]
-        for value in sweep_values:
-            name = f"{param_name_for_label}={value}"
-            suffix = name.replace('=', '_').replace('.', 'p')
-            configs_to_render_template.append({'name': name, 'suffix': suffix})
-    elif study_type == 'dqn_variants':
-        configs_to_render_template = [
-            {'name': 'DQN (No Target)', 'suffix': 'DQN_No_Target'},
-            {'name': 'DQN (With Target)', 'suffix': 'DQN_With_Target'},
-            {'name': 'Double DQN', 'suffix': 'Double_DQN'},
-            {'name': 'Dueling DDQN', 'suffix': 'Dueling_DDQN'},
-            {'name': 'Dueling DDQN + PER', 'suffix': 'Dueling_DDQN_PER'},
-        ]
-    else: # 'component'
-        configs_to_render_template = [
-            {'name': 'Full DQN (Buffer, Target)', 'suffix': 'Full_DQN_Buffer_Target'},
-            {'name': 'No Replay Buffer', 'suffix': 'No_Replay_Buffer'},
-            {'name': 'No Target Network', 'suffix': 'No_Target_Network'},
-            {'name': 'Naive DQN (No Buffer, No Target)', 'suffix': 'Naive_DQN_No_Buffer_No_Target'},
-        ]
-
-    for i in range(min(n_gifs, len(config.ablation_study.seeds))):
-        model_seed = config.ablation_study.seeds[i]
+    for i in range(min(n_gifs, len(ablation_config.seeds))):
+        model_seed = ablation_config.seeds[i]
         env_seed = model_seed # Use the same seed for model and env for consistency
         print(f"\n--- Generating GIF for seed: {env_seed} ---")
 
@@ -200,8 +248,15 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
                 num_fake = env_config.get('num_fake_actions', 0)
                 agent_action_size += num_fake
 
-            agent = Agent(state_size=env_config.state_size, action_size=agent_action_size, config=run_config, seed=0)
-            agent.qnetwork_local.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
+            algo = run_config.agent.get('algorithm', 'dqn').lower()
+            if algo == 'a2c':
+                agent = A2CAgent(state_size=env_config.state_size, action_size=agent_action_size, config=run_config, seed=0)
+                agent.network.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
+                eval_network = agent.network
+            else:
+                agent = Agent(state_size=env_config.state_size, action_size=agent_action_size, config=run_config, seed=0)
+                agent.qnetwork_local.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
+                eval_network = agent.qnetwork_local
             
             # Get state labels for saliency plot if applicable
             saliency_labels = None
@@ -240,54 +295,88 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
                 state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(device)
                 state_tensor.requires_grad = True
 
-                agent.qnetwork_local.eval()
-                action_values = agent.qnetwork_local(state_tensor)
-                agent.qnetwork_local.train()
-
-                agent_action = torch.argmax(action_values.detach()).item()
+                if algo == 'a2c':
+                    # Get activations for visualization
+                    agent.network.eval()
+                    dist, state_value, activations = agent.network(state_tensor, return_activations=True)
+                    agent.network.train()
+                    
+                    if env_config.get('is_continuous', False):
+                        # For continuous, actor output is mean, which is also the greedy action
+                        action_values = dist.mean
+                        agent_action = action_values.detach().cpu().numpy().flatten()
+                    else:
+                        # For discrete, actor output is logits, from which we derive greedy action
+                        action_values = dist.logits
+                        agent_action = torch.argmax(action_values.detach()).item()
+                # TODO: Add a case for 'reinforce' here once the agent is implemented
+                else:
+                    agent.qnetwork_local.eval()
+                    action_values = agent.qnetwork_local(state_tensor)
+                    agent.qnetwork_local.train()
+                    agent_action = torch.argmax(action_values.detach()).item()
 
                 # Map agent action to real environment action
                 env_action = agent_action
-                if use_fake_actions and agent_action >= real_action_size:
+                if use_fake_actions and not env_config.get('is_continuous', False) and agent_action >= real_action_size:
                     map_to_action = env_config.get('fake_action_maps_to', 0)
                     env_action = map_to_action
 
+                side_panel_img = None
+                if add_saliency: # This flag now controls all side panels
+                    if algo == 'a2c':
+                        plot_h = frame_h // 2
+                        plot_h_rem = frame_h % 2
+                        
+                        actor_values = activations['actor']
+                        if actor_values.ndim == 0: actor_values = np.array([actor_values.item()])
+                        
+                        actor_plot = create_actor_policy_plot(actor_values, action_labels, agent_action, 300, plot_h, is_continuous=env_config.get('is_continuous', False))
+                        
+                        critic_value = activations['critic'].item()
+                        v_plot_range = env_config.get('v_plot_range', [-500, 0])
+                        critic_plot = create_critic_value_plot(critic_value, 300, plot_h + plot_h_rem, value_range=v_plot_range)
+                        
+                        side_panel_img = np.vstack((actor_plot, critic_plot))
+                    elif algo == 'reinforce':
+                        # Placeholder for REINFORCE visualization
+                        # Once implemented, you would call a function like:
+                        # side_panel_img = create_reinforce_network_viz(...)
+                        pass
+                    else: # Default DQN visualization
+                        if saliency_labels:
+                            if env_config.get('is_continuous', False):
+                                max_q_value = action_values[0, 0] # Use first action dimension
+                            else:
+                                max_q_value = action_values[0, agent_action]
+                            
+                            eval_network.zero_grad()
+                            max_q_value.backward()
+                            
+                            saliency = state_tensor.grad.abs().squeeze(0).cpu().numpy()
+                            
+                            # normalize the saliency values
+                            if np.max(saliency) > 0:
+                                saliency /= np.max(saliency)
+                            else:
+                                saliency = np.zeros_like(saliency)
+                            
+                            # Calculate dynamic plot height based on environment frame
+                            plot_h = frame_h // 2
+                            plot_h_rem = frame_h % 2
+                            
+                            saliency_plot_img = create_saliency_plot(saliency, saliency_labels, 300, plot_h)
 
-                saliency_plot_img, q_plot_img = None, None
-
-                if add_saliency and saliency_labels:
-                    max_q_value = action_values[0, agent_action]
-                    
-                    agent.qnetwork_local.zero_grad()
-                    max_q_value.backward()
-                    
-                    saliency = state_tensor.grad.abs().squeeze(0).cpu().numpy()
-                    
-                    # normalize the saliency values
-                    if np.max(saliency) > 0:
-                        saliency /= np.max(saliency)
-                    else:
-                        saliency = np.zeros_like(saliency)
-                    
-                    # Calculate dynamic plot height based on environment frame
-                    plot_h = frame_h // 2
-                    plot_h_rem = frame_h % 2
-                    
-                    # Saliency plot
-                    saliency_plot_img = create_saliency_plot(saliency, saliency_labels, 300, plot_h)
-
-                    # Create Q-value plot
-                    q_values_np = action_values.detach().cpu().squeeze(0).numpy()
-                    q_plot_range = env_config.get('q_plot_range', [-200, 200])
-                    q_plot_img = create_q_value_plot(q_values_np, action_labels, agent_action, 300, plot_h + plot_h_rem,
-                                                     use_fake_actions=use_fake_actions, real_action_size=real_action_size,
-                                                     q_plot_range=q_plot_range)
+                            q_values_np = action_values.detach().cpu().squeeze(0).numpy()
+                            q_plot_range = env_config.get('q_plot_range', [-200, 200])
+                            q_plot_img = create_q_value_plot(q_values_np, action_labels, agent_action, 300, plot_h + plot_h_rem,
+                                                             use_fake_actions=use_fake_actions, real_action_size=real_action_size,
+                                                             q_plot_range=q_plot_range)
+                            side_panel_img = np.vstack((saliency_plot_img, q_plot_img))
 
                 # 2. Combine with saliency plot if it exists
-                if saliency_plot_img is not None and q_plot_img is not None:
-                    # Stack plots vertically, then attach to the side of the env render
-                    plots_panel = np.vstack((saliency_plot_img, q_plot_img))
-                    combined_frame = np.hstack((bordered_env_frame, plots_panel))
+                if side_panel_img is not None:
+                    combined_frame = np.hstack((bordered_env_frame, side_panel_img))
                     frames.append(combined_frame)
                 else:
                     frames.append(bordered_env_frame) # Still add border even without saliency
@@ -309,8 +398,11 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
             
             env.close()
             
-            # Create clip from frames
-            clip = ImageSequenceClip(frames, fps=50)
+            # Downsample frames to reduce memory for GIF creation.
+            # The environment runs at 50fps. We create a 25fps clip by taking every other frame.
+            downsampled_frames = frames[::2]
+            # Create clip from downsampled frames
+            clip = ImageSequenceClip(downsampled_frames, fps=25)
             generated_clips.append(clip)
 
         if not generated_clips:
@@ -350,7 +442,10 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
         # Pad with black clips if necessary to make a 2x2 grid
         if len(clips_with_text) < 4:
             print(f"Warning: Only {len(clips_with_text)} clips were processed. Padding with black squares.")
-            black_clip = ImageClip(np.zeros((1,1,3)), duration=final_duration)
+            # Get size from the first valid clip to create a correctly-sized black clip
+            clip_w, clip_h = clips_with_text[0].size
+            black_frame = np.zeros((clip_h, clip_w, 3), dtype=np.uint8)
+            black_clip = ImageClip(black_frame, duration=final_duration)
             while len(clips_with_text) < 4:
                 clips_with_text.append(black_clip)
 

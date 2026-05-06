@@ -5,7 +5,6 @@ from torch.distributions import Categorical
 
 from REINFORCE.brain import Network  # Import the brain we just built
 
-# Check if GPU is available (makes training 10x faster)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class Agent():

@@ -3,8 +3,9 @@ import numpy as np
 from omegaconf import OmegaConf
 import os
 import time
+import importlib
 
-from train import dqn
+from train import dqn # Fallback logic
 
 def plot_ablation_statistics(results_dict, title, y_label, output_path, win_condition=None, show_plots=True):
     """
@@ -56,13 +57,14 @@ def plot_ablation_statistics(results_dict, title, y_label, output_path, win_cond
 
 def run_ablation_study():
     base_config = OmegaConf.load("config.yaml")
+    ablation_config = base_config.ablation_study
 
     active_env_name = base_config.active_env
     env_config = base_config.environments[active_env_name]
 
-    n_episodes = base_config.ablation_study.get('n_episodes', 1000)
-    study_name = base_config.ablation_study.get('ablation_name', 'ablation_study')
-    seeds = base_config.ablation_study.get('seeds', [0])
+    n_episodes = ablation_config.get('n_episodes', 1000)
+    study_name = ablation_config.get('study_name', 'ablation_study')
+    seeds = ablation_config.get('seeds', [0])
     version_str = base_config.project.version.replace('.', '-')
     run_type = 'ablation'
 
@@ -70,48 +72,13 @@ def run_ablation_study():
     study_summary_dir = f"raw_results/{active_env_name}/{version_str}/{run_type}/{study_name}"
     os.makedirs(study_summary_dir, exist_ok=True)
 
-    # --- Define configurations to test ---
-    configs_to_test = []
-    study_type = base_config.ablation_study.get('study_type', 'component')
-
-    if study_type == 'sweep':
-        print("--- Running Parameter Sweep Study ---")
-        sweep_config = base_config.ablation_study.sweep
-        param_to_sweep = sweep_config.parameter
-        sweep_values = sweep_config['list_values']
-        
-        param_name_for_label = param_to_sweep.split('.')[-1]
-        for value in sweep_values:
-            configs_to_test.append({
-                'name': f"{param_name_for_label}={value}",
-                'study_type': 'sweep',
-                'param': param_to_sweep,
-                'value': value
-            })
-    elif study_type == 'dqn_variants':
-        print("--- Running DQN Variants Study ---")
-        configs_to_test = [
-            {'name': 'DQN (No Target)', 'study_type': 'dqn_variants', 'target': False, 'dqn_type': 'DQN', 'is_dueling': False, 'use_per': False},
-            {'name': 'DQN (With Target)', 'study_type': 'dqn_variants', 'target': True, 'dqn_type': 'DQN', 'is_dueling': False, 'use_per': False},
-            {'name': 'Double DQN', 'study_type': 'dqn_variants', 'target': True, 'dqn_type': 'DDQN', 'is_dueling': False, 'use_per': False},
-            {'name': 'Dueling DDQN', 'study_type': 'dqn_variants', 'target': True, 'dqn_type': 'DDQN', 'is_dueling': True, 'use_per': False},
-            {'name': 'Dueling DDQN + PER', 'study_type': 'dqn_variants', 'target': True, 'dqn_type': 'DDQN', 'is_dueling': True, 'use_per': True},
-        ]
-    else: # 'component'
-        print("--- Running Component Ablation Study ---")
-        configs_to_test = [
-            {'name': 'Full DQN (Buffer, Target)', 'study_type': 'component', 'buffer': True, 'target': True},
-            {'name': 'No Replay Buffer', 'study_type': 'component', 'buffer': False, 'target': True},
-            {'name': 'No Target Network', 'study_type': 'component', 'buffer': True, 'target': False},
-            {'name': 'Naive DQN (No Buffer, No Target)', 'study_type': 'component', 'buffer': False, 'target': False},
-        ]
-
     results = {}
     q_results = {}
     timer = time.time()
 
-    for cfg_mod in configs_to_test:
-        print(f"\n--- Running Ablation: {cfg_mod['name']} ---")
+    for experiment in ablation_config.experiments:
+        exp_name = experiment['name']
+        print(f"\n--- Running Ablation: {exp_name} ---")
         
         all_seed_scores = []
         all_seed_q_vals = []
@@ -120,24 +87,27 @@ def run_ablation_study():
             print(f"  Running seed: {seed}")
             run_config = base_config.copy()
             
-            # Apply modifications for the current run
-            current_study_type = cfg_mod['study_type']
-            if current_study_type == 'sweep':
-                OmegaConf.update(run_config, cfg_mod['param'], cfg_mod['value'])
-            elif current_study_type == 'component':
-                run_config.agent.use_replay_buffer = cfg_mod['buffer']
-                run_config.agent.use_target_network = cfg_mod['target']
-            elif current_study_type == 'dqn_variants':
-                run_config.agent.DQN_type = cfg_mod['dqn_type']
-                run_config.agent.use_target_network = cfg_mod['target']
-                run_config.agent.is_dueling = cfg_mod.get('is_dueling', False)
-                run_config.agent.use_per = cfg_mod.get('use_per', False)
+            # Create a dictionary of overrides, excluding the 'name' key
+            overrides = {k: v for k, v in experiment.items() if k != 'name'}
+            
+            # Merge the overrides into the run configuration
+            OmegaConf.set_struct(run_config, False) # Allow adding new keys
+            run_config = OmegaConf.merge(run_config, overrides)
+            OmegaConf.set_struct(run_config, True)
             
             # Define a unique name for this run's artifacts and folder
-            record_name = f"{study_name}_{cfg_mod['name'].replace(' ', '_').replace('(', '').replace(')', '').replace(',', '').replace('=', '_')}_seed{seed}"
+            record_name = f"{study_name}_{exp_name.replace(' ', '_').replace('(', '').replace(')', '').replace(',', '').replace('=', '_')}_seed{seed}"
             
-            # Run the training. The dqn function will create a unique folder for this run.
-            scores, _, avg_max_q = dqn(
+            algo_to_run = run_config.agent.get('algorithm', 'dqn')
+            try:
+                train_module = importlib.import_module('train')
+                algo_func = getattr(train_module, algo_to_run)
+            except (ImportError, AttributeError):
+                print(f"Warning: could not find function '{algo_to_run}' in train.py. Falling back to dqn.")
+                algo_func = dqn
+
+            # Run the training. The algorithm function will create a unique folder for this run.
+            scores, _, avg_max_q = algo_func(
                 config=run_config, 
                 n_episodes=n_episodes, 
                 record_name=record_name, 
@@ -148,9 +118,9 @@ def run_ablation_study():
             all_seed_scores.append(scores)
             all_seed_q_vals.append(avg_max_q)
 
-        results[cfg_mod['name']] = all_seed_scores
-        q_results[cfg_mod['name']] = all_seed_q_vals
-        print(f"\n--- Finished: {cfg_mod['name']} ---")
+        results[exp_name] = all_seed_scores
+        q_results[exp_name] = all_seed_q_vals
+        print(f"\n--- Finished: {exp_name} ---")
 
     print(f"\nAblation study finished in {(time.time() - timer)/60:.2f} minutes.")
 

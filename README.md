@@ -1,6 +1,6 @@
 # Deep Q-Network (DQN) Lunar Lander
 
-![Version](https://img.shields.io/badge/version-1.4.1-success)
+![Version](https://img.shields.io/badge/version-1.5.2-success)
 ![Python](https://img.shields.io/badge/Python-3.13-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-Deep%20Learning-EE4C2C)
 ![Gymnasium](https://img.shields.io/badge/Gymnasium-RL%20Environment-lightgrey)
@@ -107,6 +107,10 @@ Discussions for each major update should be in the discussion folder.
 * 1.5.0 - Added REINFORCE
 
   > Added REINFORCE algorithm
+
+* 1.5.2 - Added A2C with GAE
+
+  > Added A2C algorithm with n-step returns and Generalized Advantage Estimation (GAE).
 
 ## How to Run This Project
 

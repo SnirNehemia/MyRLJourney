@@ -6,6 +6,10 @@ import os
 from omegaconf import OmegaConf
 
 from agent import Agent, device
+try:
+    from agent import A2CAgent
+except ImportError:
+    pass
 
 def test_network(model_path, config, n_episodes=100):
     """
@@ -41,31 +45,42 @@ def test_network(model_path, config, n_episodes=100):
         num_fake = env_config.get('num_fake_actions', 0)
         agent_action_size += num_fake
 
-    agent = Agent(state_size=env_config.state_size, action_size=agent_action_size, config=config, seed=0)
-    agent.qnetwork_local.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
-    agent.qnetwork_local.eval() # Set model to evaluation mode
+    algo = config.agent.get('algorithm', 'dqn').lower()
+    if algo == 'a2c':
+        agent = A2CAgent(state_size=env_config.state_size, action_size=agent_action_size, config=config, seed=0)
+        agent.network.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
+        agent.network.eval()
+    else:
+        agent = Agent(state_size=env_config.state_size, action_size=agent_action_size, config=config, seed=0)
+        agent.qnetwork_local.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
+        agent.qnetwork_local.eval() # Set model to evaluation mode
 
     scores = []
     avg_max_q_history = []
 
     for i_episode in range(1, n_episodes + 1):
-        state, _ = env.reset(seed=i_episode) # Use a different, fixed seed for each test episode
+        state, _ = env.reset(seed=i_episode + 100000) # Use a large offset to ensure test envs are unseen
         score = 0
         episode_max_q_vals = []
         
         for t in range(config.training.max_t):
             # Get max predicted Q-value for the current state
             state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(device)
-            with torch.no_grad():
-                action_values = agent.qnetwork_local(state_tensor)
-            episode_max_q_vals.append(torch.max(action_values).item())
+            if algo == 'a2c':
+                with torch.no_grad():
+                    dist, state_value = agent.network(state_tensor)
+                episode_max_q_vals.append(state_value.item())
+            else:
+                with torch.no_grad():
+                    action_values = agent.qnetwork_local(state_tensor)
+                episode_max_q_vals.append(torch.max(action_values).item())
 
             # Act greedily
             agent_action = agent.act(state, exploration_param=0.0)
 
             # Map agent action to real environment action
             env_action = agent_action
-            if use_fake_actions and agent_action >= real_action_size:
+            if use_fake_actions and not env_config.get('is_continuous', False) and agent_action >= real_action_size:
                 map_to_action = env_config.get('fake_action_maps_to', 0)
                 env_action = map_to_action
 
@@ -181,46 +196,25 @@ def test_ablation():
     statistical report and violin plots for visual comparison.
     """
     base_config = OmegaConf.load("config.yaml")
+    ablation_config = base_config.ablation_study
+
     active_env_name = base_config.active_env
-    study_name = base_config.ablation_study.get('ablation_name', 'ablation_study')
-    first_seed = base_config.ablation_study.get('seeds', [0])[0]
+    study_name = ablation_config.get('study_name', 'ablation_study')
+    first_seed = ablation_config.get('seeds', [0])[0]
     version_str = base_config.project.version.replace('.', '-')
     run_type = 'ablation'
 
     study_summary_dir = f"raw_results/{active_env_name}/{version_str}/{run_type}/{study_name}"
     
-    configs_to_test = []
-    study_type = base_config.ablation_study.get('study_type', 'component')
-
-    if study_type == 'sweep':
-        print("--- Locating Models for Parameter Sweep Study ---")
-        sweep_config = base_config.ablation_study.sweep
-        param_to_sweep = sweep_config.parameter
-        sweep_values = sweep_config['list_values']
-        param_name_for_label = param_to_sweep.split('.')[-1]
-        for value in sweep_values:
-            configs_to_test.append({'name': f"{param_name_for_label}={value}"})
-    elif study_type == 'dqn_variants':
-        print("--- Locating Models for DQN Variants Study ---")
-        configs_to_test = [
-            {'name': 'DQN (No Target)'},
-            {'name': 'DQN (With Target)'},
-            {'name': 'Double DQN'},
-            {'name': 'Dueling DDQN'},
-            {'name': 'Dueling DDQN + PER'},
-        ]
-    else: # 'component'
-        print("--- Locating Models for Component Ablation Study ---")
-        configs_to_test = [
-            {'name': 'Full DQN (Buffer, Target)'}, {'name': 'No Replay Buffer'},
-            {'name': 'No Target Network'}, {'name': 'Naive DQN (No Buffer, No Target)'}
-        ]
+    print("--- Locating Models for Ablation Study ---")
+    experiments_to_test = ablation_config.experiments
 
     all_test_scores, all_test_q_values = {}, {}
 
-    for cfg_mod in configs_to_test:
-        print(f"\nProcessing configuration: {cfg_mod['name']}")
-        run_name_slug = cfg_mod['name'].replace(' ', '_').replace('(', '').replace(')', '').replace(',', '').replace('=', '_')
+    for experiment in experiments_to_test:
+        exp_name = experiment['name']
+        print(f"\nProcessing configuration: {exp_name}")
+        run_name_slug = exp_name.replace(' ', '_').replace('(', '').replace(')', '').replace(',', '').replace('=', '_')
         record_name = f"{study_name}_{run_name_slug}_seed{first_seed}"
         model_dir = f"raw_results/{active_env_name}/{version_str}/{run_type}/{record_name}"
         model_path = os.path.join(model_dir, f"{record_name}_local_best.pth")
@@ -234,8 +228,8 @@ def test_ablation():
         scores, q_values = test_network(model_path, run_config)
         
         if scores is not None:
-            all_test_scores[cfg_mod['name']] = scores
-            all_test_q_values[cfg_mod['name']] = q_values
+            all_test_scores[exp_name] = scores
+            all_test_q_values[exp_name] = q_values
 
     print("\n\n--- Ablation Test Suite Report ---")
     for name in all_test_scores.keys():

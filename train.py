@@ -4,8 +4,8 @@ import torch
 import numpy as np
 from collections import deque
 import matplotlib.pyplot as plt
-import time
-from agent import Agent, device
+import time, importlib
+from agent import Agent, A2CAgent, device
 from omegaconf import OmegaConf
 import os, shutil
 
@@ -164,14 +164,130 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
                 # Save the trained neural network weights!
                 torch.save(agent.qnetwork_local.state_dict(), f'{output_dir}/{_run_name}_best.pth')
                 break
-        else: 
+        else:
             if i_episode % 10 == 0:
-                print(f'\rEpisode {i_episode}\tAverage Score: {current_avg:.2f}', end="")
+                print(f'\rEpisode {i_episode}\tAverage Score: {current_avg:.2f}\tTime: {time.time() - time_ref:.0f} seconds = {(time.time() - time_ref)/60:.0f} minutes', end="")
             if i_episode % 250 == 0:
-                print(f'\rEpisode {i_episode}\tAverage Score: {np.mean(scores_window):.2f}\tTime: {time.time() - time_ref:.0f} seconds = {(time.time() - time_ref)/60:.0f} minutes')
+                print(f'')
 
     torch.save(agent.qnetwork_local.state_dict(), f'{output_dir}/{_run_name}_last.pth')    
     return scores, q_values_history, avg_max_q_history
+
+def a2c(config, seed=None, record_name=None, n_episodes=None, run_type='train'):
+    """Advantage Actor-Critic (A2C) training loop."""
+
+    active_env_name = config.active_env
+    env_config = config.environments[active_env_name]
+
+    # --- Fake Actions Logic ---
+    real_action_size = env_config.action_size
+    agent_action_size = real_action_size
+    use_fake_actions = env_config.get('use_fake_actions', False)
+    if use_fake_actions:
+        num_fake = env_config.get('num_fake_actions', 0)
+        agent_action_size += num_fake
+        if num_fake > 0:
+            print(f"INFO: Using {num_fake} fake actions. Agent action space: {agent_action_size}")
+
+    _version = config.project.version.replace(".", "-")
+    _run_name = record_name if record_name is not None else config.save_parameters.run_name
+
+    output_dir = f"raw_results/{active_env_name}/{_version}/{run_type}/{_run_name}"
+    os.makedirs(output_dir, exist_ok=True)
+    OmegaConf.save(config, os.path.join(output_dir, "run_config.yaml"))
+
+    current_seed = seed if seed is not None else config.project.seed
+    total_episodes = n_episodes if n_episodes is not None else config.training.n_episodes
+
+    env_params = {}
+    if 'lunar_params' in env_config:
+        env_params = OmegaConf.to_container(env_config.lunar_params)
+    env = gym.make(active_env_name, **env_params)
+    
+    agent = A2CAgent(state_size=env_config.state_size, action_size=agent_action_size, config=config, seed=current_seed)
+    
+    lr = config.training.get('lr_start', config.agent.lr)
+    agent.update_lr(lr)
+
+    scores = []
+    scores_window = deque(maxlen=100)
+    avg_state_value_history = []
+
+    best_score = -float('inf')
+    time_ref = time.time()
+
+    n_steps = config.agent.get('n_steps', 1)
+    memory = deque(maxlen=n_steps)
+
+    for i_episode in range(1, total_episodes + 1):
+        state, info = env.reset(seed=current_seed*total_episodes+i_episode)
+        score = 0
+        episode_state_vals = []
+        
+        for t in range(config.training.max_t):
+            # Log state value from the critic
+            state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(device)
+            agent.network.eval()
+            with torch.no_grad():
+                _, state_value = agent.network(state_tensor)
+            agent.network.train()
+            episode_state_vals.append(state_value.item())
+
+            # A2C's act method handles exploration by sampling from the learned policy distribution
+            agent_action = agent.act(state)
+
+            # Map agent action to real environment action
+            env_action = agent_action
+            if use_fake_actions and not env_config.get('is_continuous', False) and agent_action >= real_action_size:
+                map_to_action = env_config.get('fake_action_maps_to', 0)
+                env_action = map_to_action
+
+            next_state, reward, terminated, truncated, info = env.step(env_action)
+            done = terminated or truncated
+            
+            memory.append((state, agent_action, reward, next_state, done))
+            
+            # If we have enough steps OR the episode is done, learn from the batch
+            if len(memory) == n_steps or (done and len(memory) > 0):
+                agent.learn_from_batch(list(memory))
+                memory.clear()
+                
+            state = next_state
+            score += reward
+            if done:
+                break 
+                
+        scores_window.append(score)       
+        scores.append(score)
+        
+        if len(episode_state_vals) > 0:
+            avg_state_value_history.append(np.mean(episode_state_vals))
+        else:
+            avg_state_value_history.append(0 if len(avg_state_value_history)==0 else avg_state_value_history[-1])
+
+        current_avg = np.mean(scores_window)
+        
+        lr = max(config.training.get('lr_end', 0.0), config.training.get('lr_decay', 1.0) * lr)
+        agent.update_lr(lr)
+
+        if current_avg > best_score and i_episode > 100:
+            best_score = current_avg
+            torch.save(agent.network.state_dict(), f'{output_dir}/{_run_name}_local_best.pth')
+
+        if n_episodes is None:
+            print(f'\rEpisode {i_episode}\tAverage Score: {current_avg:.2f}', end="")
+            if i_episode % 100 == 0:
+                print(f'\rEpisode {i_episode}\tAverage Score: {np.mean(scores_window):.2f}\tTime: {time.time() - time_ref:.0f} seconds = {(time.time() - time_ref)/60:.0f} minutes')
+        else: 
+            if i_episode % 10 == 0:
+                print(f'\rEpisode {i_episode}\tAverage Score: {current_avg:.2f}\tTime: {time.time() - time_ref:.0f} seconds = {(time.time() - time_ref)/60:.0f} minutes', end="")
+            if i_episode % 250 == 0:
+                print(f'')
+
+    torch.save(agent.network.state_dict(), f'{output_dir}/{_run_name}_last.pth')    
+    # For A2C, the critic's state value is the equivalent of the Q-value for logging
+    # Return empty list for target Q-values to maintain consistent output signature
+    return scores, [], avg_state_value_history
 
 def modify_reward(reward, action):
     # Custom reward shaping to encourage unique landing behavior
@@ -196,7 +312,16 @@ if __name__ == '__main__':
     version_str = config.project.version.replace('.', '-')
     output_dir = f"raw_results/{active_env_name}/{version_str}/train/{record_name}"
 
-    scores, q_values, avg_max_q_values = dqn(config, record_name=record_name, run_type='train', seed=seed)
+    # Dynamically select the training function based on the config
+    algo_to_run = config.agent.get('algorithm', 'dqn')
+    try:
+        train_module = importlib.import_module('train')
+        algo_func = getattr(train_module, algo_to_run)
+    except (ImportError, AttributeError):
+        print(f"Warning: could not find function '{algo_to_run}' in train.py. Falling back to dqn.")
+        algo_func = dqn
+
+    scores, q_values, avg_max_q_values = algo_func(config, record_name=record_name, run_type='train', seed=seed)
     
     # Plot the learning curve
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
