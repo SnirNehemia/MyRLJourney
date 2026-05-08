@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 
 from agent import Agent, device
 try:
-    from agent import A2CAgent
+    from agent import A2CAgent, ReinforceAgent
 except ImportError:
     pass
 from omegaconf import OmegaConf
@@ -21,6 +21,8 @@ try:
 except ImportError:
     # Pillow version issue, try to proceed without font
     ImageFont = None
+
+from train import DiscretizeBoxWrapper
 
 def add_border_to_numpy_frame(frame_array, border_size, color):
     """Adds a border of specified size and color to a numpy image array.
@@ -204,7 +206,7 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
 
     for i in range(min(n_gifs, len(ablation_config.seeds))):
         model_seed = ablation_config.seeds[i]
-        env_seed = model_seed # Use the same seed for model and env for consistency
+        env_seed = config.get('testing', {}).get('test_seed_base', 100000) + i # Use an unseen test seed
         print(f"\n--- Generating GIF for seed: {env_seed} ---")
 
         generated_clips = []
@@ -217,7 +219,7 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
             # Construct the path to the model file for the current seed
             record_name_base = f"{study_name}_{cfg['suffix']}"
             record_name = f"{record_name_base}_seed{model_seed}"
-            model_dir = f"raw_results/{active_env_name}/{version_str}/{run_type}/{record_name}"
+            model_dir = f"raw_results/{active_env_name}/{version_str}/{run_type}/{study_name}/{record_name}"
             model_path = os.path.join(model_dir, f"{record_name}_local_best.pth")
 
             # Load the specific config file that was used for this training run
@@ -240,21 +242,35 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
             
             env_config = run_config.environments[run_config.active_env]
 
+            if not env_config.get('is_continuous', False) and isinstance(env.action_space, gym.spaces.Box):
+                bins = env_config.get('discrete_bins', 3)
+                env = DiscretizeBoxWrapper(env, bins)
+
             # --- Fake Actions Logic ---
-            real_action_size = env_config.action_size
+            if env_config.get('is_continuous', False):
+                real_action_size = env.action_space.shape[0]
+            else:
+                real_action_size = env.action_space.n
+                
             agent_action_size = real_action_size
             use_fake_actions = env_config.get('use_fake_actions', False)
             if use_fake_actions:
                 num_fake = env_config.get('num_fake_actions', 0)
                 agent_action_size += num_fake
 
+            agent_state_size = env.observation_space.shape[0]
+
             algo = run_config.agent.get('algorithm', 'dqn').lower()
             if algo == 'a2c':
-                agent = A2CAgent(state_size=env_config.state_size, action_size=agent_action_size, config=run_config, seed=0)
+                agent = A2CAgent(state_size=agent_state_size, action_size=agent_action_size, config=run_config, seed=0)
+                agent.network.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
+                eval_network = agent.network
+            elif algo == 'reinforce':
+                agent = ReinforceAgent(state_size=agent_state_size, action_size=agent_action_size, config=run_config, seed=0)
                 agent.network.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
                 eval_network = agent.network
             else:
-                agent = Agent(state_size=env_config.state_size, action_size=agent_action_size, config=run_config, seed=0)
+                agent = Agent(state_size=agent_state_size, action_size=agent_action_size, config=run_config, seed=0)
                 agent.qnetwork_local.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
                 eval_network = agent.qnetwork_local
             
@@ -262,7 +278,7 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
             saliency_labels = None
             action_labels = None
             if add_saliency:
-                saliency_labels = env_config.get('state_labels', [f'Input {i}' for i in range(env_config.state_size)])
+                saliency_labels = env_config.get('state_labels', [f'Input {i}' for i in range(agent_state_size)])
                 action_labels = env_config.get('action_labels', [f'Action {i}' for i in range(real_action_size)])
                 if use_fake_actions:
                     num_fake = env_config.get('num_fake_actions', 0)
@@ -309,7 +325,20 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
                         # For discrete, actor output is logits, from which we derive greedy action
                         action_values = dist.logits
                         agent_action = torch.argmax(action_values.detach()).item()
-                # TODO: Add a case for 'reinforce' here once the agent is implemented
+                elif algo == 'reinforce':
+                    # Get activations for visualization
+                    agent.network.eval()
+                    dist, activations = agent.network(state_tensor, return_activations=True)
+                    agent.network.train()
+                    
+                    if env_config.get('is_continuous', False):
+                        # For continuous, actor output is mean, which is also the greedy action
+                        action_values = dist.mean
+                        agent_action = action_values.detach().cpu().numpy().flatten()
+                    else:
+                        # For discrete, actor output is logits, from which we derive greedy action
+                        action_values = dist.logits
+                        agent_action = torch.argmax(action_values.detach()).item()
                 else:
                     agent.qnetwork_local.eval()
                     action_values = agent.qnetwork_local(state_tensor)
@@ -334,15 +363,21 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
                         actor_plot = create_actor_policy_plot(actor_values, action_labels, agent_action, 300, plot_h, is_continuous=env_config.get('is_continuous', False))
                         
                         critic_value = activations['critic'].item()
-                        v_plot_range = env_config.get('v_plot_range', [-500, 0])
+                        v_plot_range = env_config.get('q_plot_range', [-500, 0])
                         critic_plot = create_critic_value_plot(critic_value, 300, plot_h + plot_h_rem, value_range=v_plot_range)
                         
                         side_panel_img = np.vstack((actor_plot, critic_plot))
                     elif algo == 'reinforce':
-                        # Placeholder for REINFORCE visualization
-                        # Once implemented, you would call a function like:
-                        # side_panel_img = create_reinforce_network_viz(...)
-                        pass
+                        plot_h = frame_h // 2
+                        plot_h_rem = frame_h % 2
+                        
+                        actor_values = activations['actor']
+                        if actor_values.ndim == 0: actor_values = np.array([actor_values.item()])
+                        
+                        actor_plot = create_actor_policy_plot(actor_values, action_labels, agent_action, 300, plot_h * 2 + plot_h_rem, is_continuous=env_config.get('is_continuous', False))
+                        
+                        side_panel_img = actor_plot
+
                     else: # Default DQN visualization
                         if saliency_labels:
                             if env_config.get('is_continuous', False):

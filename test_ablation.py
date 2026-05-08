@@ -7,9 +7,11 @@ from omegaconf import OmegaConf
 
 from agent import Agent, device
 try:
-    from agent import A2CAgent
+    from agent import A2CAgent, ReinforceAgent
 except ImportError:
     pass
+
+from train import DiscretizeBoxWrapper
 
 def test_network(model_path, config, n_episodes=100):
     """
@@ -37,29 +39,44 @@ def test_network(model_path, config, n_episodes=100):
         env_params = OmegaConf.to_container(env_config.lunar_params)
     env = gym.make(active_env_name, **env_params)
     
+    if not env_config.get('is_continuous', False) and isinstance(env.action_space, gym.spaces.Box):
+        bins = env_config.get('discrete_bins', 3)
+        env = DiscretizeBoxWrapper(env, bins)
+
     # --- Fake Actions Logic ---
-    real_action_size = env_config.action_size
+    if env_config.get('is_continuous', False):
+        real_action_size = env.action_space.shape[0]
+    else:
+        real_action_size = env.action_space.n
+        
     agent_action_size = real_action_size
     use_fake_actions = env_config.get('use_fake_actions', False)
     if use_fake_actions:
         num_fake = env_config.get('num_fake_actions', 0)
         agent_action_size += num_fake
 
+    agent_state_size = env.observation_space.shape[0]
+
     algo = config.agent.get('algorithm', 'dqn').lower()
     if algo == 'a2c':
-        agent = A2CAgent(state_size=env_config.state_size, action_size=agent_action_size, config=config, seed=0)
+        agent = A2CAgent(state_size=agent_state_size, action_size=agent_action_size, config=config, seed=0)
+        agent.network.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
+        agent.network.eval()
+    elif algo == 'reinforce':
+        agent = ReinforceAgent(state_size=agent_state_size, action_size=agent_action_size, config=config, seed=0)
         agent.network.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
         agent.network.eval()
     else:
-        agent = Agent(state_size=env_config.state_size, action_size=agent_action_size, config=config, seed=0)
+        agent = Agent(state_size=agent_state_size, action_size=agent_action_size, config=config, seed=0)
         agent.qnetwork_local.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
         agent.qnetwork_local.eval() # Set model to evaluation mode
 
     scores = []
     avg_max_q_history = []
+    test_seed_base = config.get('testing', {}).get('test_seed_base', 100000)
 
     for i_episode in range(1, n_episodes + 1):
-        state, _ = env.reset(seed=i_episode + 100000) # Use a large offset to ensure test envs are unseen
+        state, _ = env.reset(seed=test_seed_base + i_episode)
         score = 0
         episode_max_q_vals = []
         
@@ -70,6 +87,11 @@ def test_network(model_path, config, n_episodes=100):
                 with torch.no_grad():
                     dist, state_value = agent.network(state_tensor)
                 episode_max_q_vals.append(state_value.item())
+            elif algo == 'reinforce':
+                with torch.no_grad():
+                    dist = agent.network(state_tensor)
+                episode_max_q_vals.append(0) # No value estimation in base reinforce
+
             else:
                 with torch.no_grad():
                     action_values = agent.qnetwork_local(state_tensor)
@@ -216,7 +238,7 @@ def test_ablation():
         print(f"\nProcessing configuration: {exp_name}")
         run_name_slug = exp_name.replace(' ', '_').replace('(', '').replace(')', '').replace(',', '').replace('=', '_')
         record_name = f"{study_name}_{run_name_slug}_seed{first_seed}"
-        model_dir = f"raw_results/{active_env_name}/{version_str}/{run_type}/{record_name}"
+        model_dir = f"raw_results/{active_env_name}/{version_str}/{run_type}/{study_name}/{record_name}"
         model_path = os.path.join(model_dir, f"{record_name}_local_best.pth")
         run_config_path = os.path.join(model_dir, "run_config.yaml")
 

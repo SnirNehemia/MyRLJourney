@@ -3,6 +3,9 @@ from test_ablation import test_ablation
 from make_gif import make_gifs_for_study
 import time
 
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning, module="torchrl")
+
 def run_full_pipeline():
     """
     Executes the complete ablation study pipeline:

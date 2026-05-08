@@ -301,54 +301,93 @@ class A2CAgent:
         self.is_continuous = env_config.get('is_continuous', False)
         
         class ActorCritic(torch.nn.Module):
-            def __init__(self, state_size, action_size, hidden_size, is_continuous):
+            def __init__(self, state_size, action_size, hidden_size, is_continuous, share_network=False):
                 super().__init__()
                 self.is_continuous = is_continuous
+                self.share_network = share_network
                 
-                # Actor Network (Policy)
-                self.actor_fc1 = torch.nn.Linear(state_size, hidden_size[0])
-                self.actor_fc2 = torch.nn.Linear(hidden_size[0], hidden_size[1])
-                if self.is_continuous:
-                    self.actor_mean = torch.nn.Linear(hidden_size[1], action_size)
-                    self.actor_std = torch.nn.Parameter(torch.zeros(1, action_size))
+                if self.share_network:
+                    # Shared Backbone
+                    self.shared_fc1 = torch.nn.Linear(state_size, hidden_size[0])
+                    self.shared_fc2 = torch.nn.Linear(hidden_size[0], hidden_size[1])
+                    
+                    if self.is_continuous:
+                        self.actor_mean = torch.nn.Linear(hidden_size[1], action_size)
+                        self.actor_std = torch.nn.Parameter(torch.zeros(1, action_size))
+                    else:
+                        self.actor_out = torch.nn.Linear(hidden_size[1], action_size)
+                    self.critic_out = torch.nn.Linear(hidden_size[1], 1)
                 else:
-                    self.actor_out = torch.nn.Linear(hidden_size[1], action_size)
+                    # Actor Network (Policy)
+                    self.actor_fc1 = torch.nn.Linear(state_size, hidden_size[0])
+                    self.actor_fc2 = torch.nn.Linear(hidden_size[0], hidden_size[1])
+                    if self.is_continuous:
+                        self.actor_mean = torch.nn.Linear(hidden_size[1], action_size)
+                        self.actor_std = torch.nn.Parameter(torch.zeros(1, action_size))
+                    else:
+                        self.actor_out = torch.nn.Linear(hidden_size[1], action_size)
 
-                # Critic Network (Value)
-                self.critic_fc1 = torch.nn.Linear(state_size, hidden_size[0])
-                self.critic_fc2 = torch.nn.Linear(hidden_size[0], hidden_size[1])
-                self.critic_out = torch.nn.Linear(hidden_size[1], 1)
+                    # Critic Network (Value)
+                    self.critic_fc1 = torch.nn.Linear(state_size, hidden_size[0])
+                    self.critic_fc2 = torch.nn.Linear(hidden_size[0], hidden_size[1])
+                    self.critic_out = torch.nn.Linear(hidden_size[1], 1)
                     
             def forward(self, state, return_activations=False):
-                # Actor Pass
-                a1 = F.relu(self.actor_fc1(state))
-                a2 = F.relu(self.actor_fc2(a1))
-                
-                if self.is_continuous:
-                    mean = torch.tanh(self.actor_mean(a2))
-                    std = F.softplus(self.actor_std).expand_as(mean) + 1e-5
-                    dist = distributions.Normal(mean, std)
-                    actor_output_viz = mean # for visualization
+                if self.share_network:
+                    s1 = F.relu(self.shared_fc1(state))
+                    s2 = F.relu(self.shared_fc2(s1))
+                    
+                    if self.is_continuous:
+                        mean = torch.tanh(self.actor_mean(s2))
+                        std = F.softplus(self.actor_std).expand_as(mean) + 1e-5
+                        dist = distributions.Normal(mean, std)
+                        actor_output_viz = mean
+                    else:
+                        logits = self.actor_out(s2)
+                        dist = distributions.Categorical(logits=logits)
+                        actor_output_viz = F.softmax(logits, dim=-1)
+                    
+                    state_value = self.critic_out(s2)
+                    
+                    if return_activations:
+                        activations = {
+                            'input': state.detach().cpu().numpy().squeeze(),
+                            'h1': s1.detach().cpu().numpy().squeeze(),
+                            'h2': s2.detach().cpu().numpy().squeeze(),
+                            'actor': actor_output_viz.detach().cpu().numpy().squeeze(),
+                            'critic': state_value.detach().cpu().numpy().squeeze()
+                        }
+                        return dist, state_value, activations
                 else:
-                    logits = self.actor_out(a2)
-                    dist = distributions.Categorical(logits=logits)
-                    actor_output_viz = F.softmax(logits, dim=-1)
-                
-                # Critic Pass
-                c1 = F.relu(self.critic_fc1(state))
-                c2 = F.relu(self.critic_fc2(c1))
-                state_value = self.critic_out(c2)
+                    # Actor Pass
+                    a1 = F.relu(self.actor_fc1(state))
+                    a2 = F.relu(self.actor_fc2(a1))
+                    
+                    if self.is_continuous:
+                        mean = torch.tanh(self.actor_mean(a2))
+                        std = F.softplus(self.actor_std).expand_as(mean) + 1e-5
+                        dist = distributions.Normal(mean, std)
+                        actor_output_viz = mean # for visualization
+                    else:
+                        logits = self.actor_out(a2)
+                        dist = distributions.Categorical(logits=logits)
+                        actor_output_viz = F.softmax(logits, dim=-1)
+                    
+                    # Critic Pass
+                    c1 = F.relu(self.critic_fc1(state))
+                    c2 = F.relu(self.critic_fc2(c1))
+                    state_value = self.critic_out(c2)
 
-                if return_activations:
-                    # Detach all tensors for visualization to avoid holding onto graph
-                    activations = {
-                        'input': state.detach().cpu().numpy().squeeze(),
-                        'h1': a1.detach().cpu().numpy().squeeze(), # visualizing actor path
-                        'h2': a2.detach().cpu().numpy().squeeze(),
-                        'actor': actor_output_viz.detach().cpu().numpy().squeeze(),
-                        'critic': state_value.detach().cpu().numpy().squeeze()
-                    }
-                    return dist, state_value, activations
+                    if return_activations:
+                        # Detach all tensors for visualization to avoid holding onto graph
+                        activations = {
+                            'input': state.detach().cpu().numpy().squeeze(),
+                            'h1': a1.detach().cpu().numpy().squeeze(), # visualizing actor path
+                            'h2': a2.detach().cpu().numpy().squeeze(),
+                            'actor': actor_output_viz.detach().cpu().numpy().squeeze(),
+                            'critic': state_value.detach().cpu().numpy().squeeze()
+                        }
+                        return dist, state_value, activations
                     
                 return dist, state_value
                 
@@ -366,25 +405,35 @@ class A2CAgent:
                 else:
                     torch.nn.init.orthogonal_(self.actor_out.weight, gain=0.01)
 
-        self.network = ActorCritic(state_size, action_size, env_config.network.hidden_size, self.is_continuous).to(device)
+        share_network = self.config.agent.get('share_network', False)
+        self.network = ActorCritic(state_size, action_size, env_config.network.hidden_size, self.is_continuous, share_network).to(device)
         self.network.init_weights()
         self.optimizer = optim.Adam(self.network.parameters(), lr=config.agent.get('lr', 0.005))
         self.gamma = config.agent.gamma
 
     def act(self, state, exploration_param=None):
         """Returns actions for given state as per current policy."""
-        state = torch.from_numpy(state).float().unsqueeze(0).to(device)
+        
+        if state.ndim == 1:
+            state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(device)
+            is_single = True
+        else:
+            state_tensor = torch.from_numpy(state).float().to(device)
+            is_single = False
+            
         self.network.eval()
         with torch.no_grad():
-            dist, _ = self.network(state)
+            dist, _ = self.network(state_tensor)
         self.network.train()
         
         if self.is_continuous:
             action = dist.mean if exploration_param == 0.0 else dist.sample()
-            return action.cpu().data.numpy().flatten()
+            action = action.cpu().data.numpy()
+            return action.flatten() if is_single else action
         else:
-            action = torch.argmax(dist.logits).item() if exploration_param == 0.0 else dist.sample().item()
-            return action
+            action = torch.argmax(dist.logits, dim=-1) if exploration_param == 0.0 else dist.sample()
+            action = action.cpu().data.numpy()
+            return action.item() if is_single else action
 
     def update_lr(self, lr):
         """Update learning rate for the optimizer"""
@@ -395,53 +444,67 @@ class A2CAgent:
         """Update policy and value parameters using a batch of n-step experiences with GAE."""
         states, actions, rewards, next_states, dones = zip(*memory)
 
-        # Convert lists to tensors
+        # Convert lists to tensors (Shape: n_steps, num_envs, ...)
         states_tensor = torch.from_numpy(np.array(states)).float().to(device)
         if self.is_continuous:
             actions_tensor = torch.tensor(np.array(actions), dtype=torch.float32).to(device)
         else:
-            actions_tensor = torch.tensor(actions, dtype=torch.long).to(device)
+            actions_tensor = torch.tensor(np.array(actions), dtype=torch.long).to(device)
+            
+        rewards_tensor = torch.tensor(np.array(rewards), dtype=torch.float32).to(device)
+        dones_tensor = torch.tensor(np.array(dones), dtype=torch.float32).to(device)
 
-        # Forward pass to get distributions, values, and entropy for the batch of states
-        dists, values = self.network(states_tensor)
-        values = values.view(-1) # V(s_0) ... V(s_{N-1})
+        n_steps, num_envs = states_tensor.shape[0], states_tensor.shape[1]
 
-        # --- Critic Loss Calculation (using n-step returns) ---
-        # The last next_state is used for bootstrapping the n-step return
-        last_state_tensor = torch.from_numpy(next_states[-1]).float().unsqueeze(0).to(device)
+        # Forward pass on flattened states for GPU efficiency
+        states_flat = states_tensor.view(n_steps * num_envs, -1)
+        dists, values_flat = self.network(states_flat)
+        values = values_flat.view(n_steps, num_envs) # V(s_0) ... V(s_{N-1})
+
+        last_state_tensor = torch.from_numpy(next_states[-1]).float().to(device)
         with torch.no_grad():
-            _, last_value = self.network(last_state_tensor) # V(s_N)
+            _, last_value = self.network(last_state_tensor)
+            last_value = last_value.view(num_envs)
 
-        # Calculate n-step returns for the critic target
-        returns = []
-        R = last_value.item() * (1 - dones[-1]) # Bootstrap if the episode didn't end
-        for r in reversed(rewards):
-            R = r + self.gamma * R
-            returns.insert(0, R)
-        returns = torch.tensor(returns, dtype=torch.float32, device=device)
-        
-        critic_loss = F.smooth_l1_loss(values, returns) # Use Huber loss for critic stability
-
-        # --- Actor Loss Calculation (using GAE) ---
+        # --- Advantage Calculation (using GAE) ---
         gae_lambda = self.config.agent.get('gae_lambda', 0.95)
-        advantages = []
+        advantages = torch.zeros(n_steps, num_envs).to(device)
         gae = 0
         
         values_detached = values.detach()
-        last_value_detached = last_value.view(-1).detach()
-        all_values_detached = torch.cat((values_detached, last_value_detached))
+        last_value_detached = last_value.detach()
+        all_values_detached = torch.cat((values_detached, last_value_detached.unsqueeze(0)), dim=0) # (n_steps+1, num_envs)
         
-        for t in reversed(range(len(rewards))):
-            delta = rewards[t] + self.gamma * all_values_detached[t+1] * (1 - dones[t]) - all_values_detached[t]
-            gae = delta + self.gamma * gae_lambda * gae * (1 - dones[t])
-            advantages.insert(0, gae)
+        for t in reversed(range(n_steps)):
+            delta = rewards_tensor[t] + self.gamma * all_values_detached[t+1] * (1 - dones_tensor[t]) - all_values_detached[t]
+            gae = delta + self.gamma * gae_lambda * gae * (1 - dones_tensor[t])
+            advantages[t] = gae
         
-        advantages = torch.stack(advantages)
+        # --- Critic Loss Calculation (using TD(lambda) returns) ---
+        returns = advantages + values_detached
+
+        # Flatten for loss computation
+        values = values.view(-1)
+        returns = returns.view(-1)
+        advantages = advantages.view(-1)
+        
+        critic_loss = F.smooth_l1_loss(values, returns)
+
+        # --- Actor Loss Calculation ---
         if len(advantages) > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8) # Normalize advantages
 
-        log_probs = dists.log_prob(actions_tensor)
-        entropy_loss = dists.entropy().mean()
+        if self.is_continuous:
+            actions_flat = actions_tensor.view(n_steps * num_envs, -1)
+        else:
+            actions_flat = actions_tensor.view(-1)
+
+        log_probs = dists.log_prob(actions_flat)
+        if self.is_continuous:
+            log_probs = log_probs.sum(dim=-1) # Sum independent action probabilities
+            entropy_loss = dists.entropy().sum(dim=-1).mean()
+        else:
+            entropy_loss = dists.entropy().mean()
         
         actor_loss = -(log_probs * advantages.detach()).mean()
 
@@ -453,6 +516,144 @@ class A2CAgent:
         self.optimizer.zero_grad()
         loss.backward()
         # Clip gradients to prevent exploding weights caused by massive critic MSE early in training
+        torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=1.0)
+        self.optimizer.step()
+        
+        return loss.item()
+
+class ReinforceAgent:
+    """Interacts with and learns from the environment using REINFORCE (Monte Carlo Policy Gradient)."""
+
+    def __init__(self, state_size, action_size, config, seed=None):
+        self.config = config
+        self.state_size = state_size
+        self.action_size = action_size
+        self.seed = random.seed(seed if seed is not None else self.config.project.seed)
+        torch.manual_seed(seed if seed is not None else self.config.project.seed)
+        
+        active_env_name = self.config.active_env
+        env_config = self.config.environments[active_env_name]
+        self.is_continuous = env_config.get('is_continuous', False)
+        
+        class PolicyNetwork(torch.nn.Module):
+            def __init__(self, state_size, action_size, hidden_size, is_continuous):
+                super().__init__()
+                self.is_continuous = is_continuous
+                
+                self.fc1 = torch.nn.Linear(state_size, hidden_size[0])
+                self.fc2 = torch.nn.Linear(hidden_size[0], hidden_size[1])
+                
+                if self.is_continuous:
+                    self.actor_mean = torch.nn.Linear(hidden_size[1], action_size)
+                    self.actor_std = torch.nn.Parameter(torch.zeros(1, action_size))
+                else:
+                    self.actor_out = torch.nn.Linear(hidden_size[1], action_size)
+                    
+            def forward(self, state, return_activations=False):
+                a1 = F.relu(self.fc1(state))
+                a2 = F.relu(self.fc2(a1))
+                
+                if self.is_continuous:
+                    mean = torch.tanh(self.actor_mean(a2))
+                    std = F.softplus(self.actor_std).expand_as(mean) + 1e-5
+                    dist = distributions.Normal(mean, std)
+                    actor_output_viz = mean
+                else:
+                    logits = self.actor_out(a2)
+                    dist = distributions.Categorical(logits=logits)
+                    actor_output_viz = F.softmax(logits, dim=-1)
+                    
+                if return_activations:
+                    activations = {
+                        'input': state.detach().cpu().numpy().squeeze(),
+                        'h1': a1.detach().cpu().numpy().squeeze(),
+                        'h2': a2.detach().cpu().numpy().squeeze(),
+                        'actor': actor_output_viz.detach().cpu().numpy().squeeze()
+                    }
+                    return dist, activations
+                return dist
+
+            def init_weights(self):
+                """Apply orthogonal initialization to weights."""
+                for m in self.modules():
+                    if isinstance(m, torch.nn.Linear):
+                        torch.nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                        torch.nn.init.constant_(m.bias, 0.0)
+                
+                if self.is_continuous:
+                    torch.nn.init.orthogonal_(self.actor_mean.weight, gain=0.01)
+                else:
+                    torch.nn.init.orthogonal_(self.actor_out.weight, gain=0.01)
+
+        self.network = PolicyNetwork(state_size, action_size, env_config.network.hidden_size, self.is_continuous).to(device)
+        self.network.init_weights()
+        self.optimizer = optim.Adam(self.network.parameters(), lr=config.agent.get('lr', 0.005))
+        self.gamma = config.agent.gamma
+
+    def act(self, state, exploration_param=None):
+        """Returns actions for given state as per current policy."""
+        if state.ndim == 1:
+            state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(device)
+            is_single = True
+        else:
+            state_tensor = torch.from_numpy(state).float().to(device)
+            is_single = False
+            
+        self.network.eval()
+        with torch.no_grad():
+            dist = self.network(state_tensor)
+        self.network.train()
+        
+        if self.is_continuous:
+            action = dist.mean if exploration_param == 0.0 else dist.sample()
+            action = action.cpu().data.numpy()
+            return action.flatten() if is_single else action
+        else:
+            action = torch.argmax(dist.logits, dim=-1) if exploration_param == 0.0 else dist.sample()
+            action = action.cpu().data.numpy()
+            return action.item() if is_single else action
+
+    def update_lr(self, lr):
+        """Update learning rate for the optimizer"""
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
+
+    def learn_from_episode(self, memory):
+        """Update policy parameters using a full episode of experiences."""
+        states, actions, rewards = zip(*memory)
+
+        states_tensor = torch.from_numpy(np.array(states)).float().to(device)
+        if self.is_continuous:
+            actions_tensor = torch.tensor(np.array(actions), dtype=torch.float32).to(device)
+        else:
+            actions_tensor = torch.tensor(np.array(actions), dtype=torch.long).to(device)
+            
+        # Calculate discounted returns
+        returns = []
+        G = 0
+        for r in reversed(rewards):
+            G = r + self.gamma * G
+            returns.insert(0, G)
+        
+        returns_tensor = torch.tensor(returns, dtype=torch.float32).to(device)
+        
+        # Normalize returns
+        if len(returns_tensor) > 1:
+            returns_tensor = (returns_tensor - returns_tensor.mean()) / (returns_tensor.std() + 1e-8)
+
+        # Forward pass
+        dists = self.network(states_tensor)
+        
+        # Calculate Actor Loss
+        if self.is_continuous:
+            log_probs = dists.log_prob(actions_tensor).sum(dim=-1)
+        else:
+            log_probs = dists.log_prob(actions_tensor)
+            
+        loss = -(log_probs * returns_tensor).mean()
+
+        self.optimizer.zero_grad()
+        loss.backward()
         torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=1.0)
         self.optimizer.step()
         

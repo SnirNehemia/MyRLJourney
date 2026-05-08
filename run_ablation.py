@@ -112,6 +112,7 @@ def run_ablation_study():
                 n_episodes=n_episodes, 
                 record_name=record_name, 
                 run_type=run_type,
+                study_name=study_name,
                 seed=seed
             )
             

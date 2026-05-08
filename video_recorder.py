@@ -4,6 +4,7 @@ from gymnasium.wrappers import RecordVideo
 from agent import Agent
 from omegaconf import OmegaConf
 import os
+from train import DiscretizeBoxWrapper
 
 config = OmegaConf.load("config.yaml")
 
@@ -44,6 +45,10 @@ def record_videos_for_main_run():
         if 'lunar_params' in env_config_video:
             env_params_video = OmegaConf.to_container(env_config_video.lunar_params)
         env = gym.make(active_env_name, render_mode="rgb_array", **env_params_video)
+        
+        if not env_config_video.get('is_continuous', False) and isinstance(env.action_space, gym.spaces.Box):
+            bins = env_config_video.get('discrete_bins', 3)
+            env = DiscretizeBoxWrapper(env, bins)
 
         # 2. Wrap the environment to record video
         env = RecordVideo(
@@ -57,21 +62,28 @@ def record_videos_for_main_run():
         env_config = config.environments[active_env_name]
 
         # --- Fake Actions Logic ---
-        real_action_size = env_config.action_size
+        if env_config.get('is_continuous', False):
+            real_action_size = env.action_space.shape[0]
+        else:
+            real_action_size = env.action_space.n
+            
         agent_action_size = real_action_size
         use_fake_actions = env_config.get('use_fake_actions', False)
         if use_fake_actions:
             num_fake = env_config.get('num_fake_actions', 0)
             agent_action_size += num_fake
 
-        agent = Agent(state_size=env_config.state_size, action_size=agent_action_size, config=config, seed=0)
+        agent_state_size = env.observation_space.shape[0]
+
+        agent = Agent(state_size=agent_state_size, action_size=agent_action_size, config=config, seed=0)
 
         # 4. Load the trained "brain" weights from our checkpoint file
         agent.qnetwork_local.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
         print(f"\n'{model_file}' brain loaded successfully! Rolling video...")
 
         # 5. Play one single game
-        state, info = env.reset()
+        test_seed = config.get('testing', {}).get('test_seed_base', 100000)
+        state, info = env.reset(seed=test_seed)
         score = 0
         done = False
 

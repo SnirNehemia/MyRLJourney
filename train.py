@@ -5,20 +5,54 @@ import numpy as np
 from collections import deque
 import matplotlib.pyplot as plt
 import time, importlib
-from agent import Agent, A2CAgent, device
+from agent import Agent, A2CAgent, ReinforceAgent, device
 from omegaconf import OmegaConf
 import os, shutil
 
 config = OmegaConf.load("config.yaml")
 
-def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run_type='train'):
+class DiscretizeBoxWrapper(gym.ActionWrapper):
+    def __init__(self, env, bins):
+        super().__init__(env)
+        self.bins = bins
+        self.action_dim = env.action_space.shape[0]
+        self.action_space = gym.spaces.Discrete(bins ** self.action_dim)
+        
+    def action(self, action):
+        continuous_action = np.zeros(self.action_dim, dtype=np.float32)
+        curr_action = action
+        for i in range(self.action_dim):
+            bin_idx = curr_action % self.bins
+            curr_action = curr_action // self.bins
+            low = self.env.action_space.low[i]
+            high = self.env.action_space.high[i]
+            if np.isinf(low): low = -1.0
+            if np.isinf(high): high = 1.0
+            continuous_action[i] = low + (bin_idx / (self.bins - 1)) * (high - low)
+        return continuous_action
+
+def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run_type='train', study_name=None):
     """Deep Q-Learning training loop."""
 
     active_env_name = config.active_env
     env_config = config.environments[active_env_name]
 
+    # Initialize Environment
+    env_params = {}
+    if 'lunar_params' in env_config:
+        env_params = OmegaConf.to_container(env_config.lunar_params)
+    env = gym.make(active_env_name, **env_params)
+    
+    if not env_config.get('is_continuous', False) and isinstance(env.action_space, gym.spaces.Box):
+        bins = env_config.get('discrete_bins', 3)
+        env = DiscretizeBoxWrapper(env, bins)
+
     # --- Fake Actions Logic ---
-    real_action_size = env_config.action_size
+    if env_config.get('is_continuous', False):
+        real_action_size = env.action_space.shape[0]
+    else:
+        real_action_size = env.action_space.n
+        
     agent_action_size = real_action_size
     use_fake_actions = env_config.get('use_fake_actions', False)
     if use_fake_actions:
@@ -27,11 +61,16 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
         if num_fake > 0:
             print(f"INFO: Using {num_fake} fake actions. Agent action space: {agent_action_size}")
 
+    agent_state_size = env.observation_space.shape[0]
+
     _version = config.project.version.replace(".", "-")
     _run_name = record_name if record_name is not None else config.save_parameters.run_name
 
     # Create a directory for the run
-    output_dir = f"raw_results/{active_env_name}/{_version}/{run_type}/{_run_name}"
+    if study_name is not None:
+        output_dir = f"raw_results/{active_env_name}/{_version}/{run_type}/{study_name}/{_run_name}"
+    else:
+        output_dir = f"raw_results/{active_env_name}/{_version}/{run_type}/{_run_name}"
     os.makedirs(output_dir, exist_ok=True)
     # Save the exact config used for this run for reproducibility
     OmegaConf.save(config, os.path.join(output_dir, "run_config.yaml"))
@@ -43,13 +82,7 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
     current_seed = seed if seed is not None else config.project.seed
     total_episodes = n_episodes if n_episodes is not None else config.training.n_episodes
 
-    # Initialize Environment and Agent
-    env_params = {}
-    if 'lunar_params' in env_config:
-        env_params = OmegaConf.to_container(env_config.lunar_params)
-    env = gym.make(active_env_name, **env_params)
-    
-    agent = Agent(state_size=env_config.state_size, action_size=agent_action_size, config=config, seed=current_seed)
+    agent = Agent(state_size=agent_state_size, action_size=agent_action_size, config=config, seed=current_seed)
     
     scores = []
     scores_window = deque(maxlen=100)
@@ -170,41 +203,72 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
             if i_episode % 250 == 0:
                 print(f'')
 
+    # Pad results if training ended early to ensure consistent lengths for plotting
+    if len(scores) < total_episodes:
+        padding_needed = total_episodes - len(scores)
+        if scores: # Check if scores is not empty
+            scores.extend([scores[-1]] * padding_needed)
+            q_values_history.extend([q_values_history[-1]] * padding_needed)
+            avg_max_q_history.extend([avg_max_q_history[-1]] * padding_needed)
+        else: # Handle case where no episodes were completed
+            scores.extend([0] * padding_needed)
+            q_values_history.extend([0] * padding_needed)
+            avg_max_q_history.extend([0] * padding_needed)
+
     torch.save(agent.qnetwork_local.state_dict(), f'{output_dir}/{_run_name}_last.pth')    
     return scores, q_values_history, avg_max_q_history
 
-def a2c(config, seed=None, record_name=None, n_episodes=None, run_type='train'):
+def a2c(config, seed=None, record_name=None, n_episodes=None, run_type='train', study_name=None):
     """Advantage Actor-Critic (A2C) training loop."""
 
     active_env_name = config.active_env
     env_config = config.environments[active_env_name]
 
+    num_envs = config.agent.get('num_envs', 8)
+
+    def make_env():
+        env_params = {}
+        if 'lunar_params' in env_config:
+            env_params = OmegaConf.to_container(env_config.lunar_params)
+        e = gym.make(active_env_name, **env_params)
+        if not env_config.get('is_continuous', False) and isinstance(e.action_space, gym.spaces.Box):
+            bins = env_config.get('discrete_bins', 3)
+            e = DiscretizeBoxWrapper(e, bins)
+        return e
+
+    # Initialize Vector Environment
+    env = gym.vector.AsyncVectorEnv([make_env for _ in range(num_envs)])
+
     # --- Fake Actions Logic ---
-    real_action_size = env_config.action_size
+    dummy_env = make_env()
+    if env_config.get('is_continuous', False):
+        real_action_size = dummy_env.action_space.shape[0]
+    else:
+        real_action_size = dummy_env.action_space.n
+    dummy_env.close()
+
     agent_action_size = real_action_size
     use_fake_actions = env_config.get('use_fake_actions', False)
     if use_fake_actions:
         num_fake = env_config.get('num_fake_actions', 0)
         agent_action_size += num_fake
-        if num_fake > 0:
-            print(f"INFO: Using {num_fake} fake actions. Agent action space: {agent_action_size}")
+
+    agent_state_size = dummy_env.observation_space.shape[0]
 
     _version = config.project.version.replace(".", "-")
     _run_name = record_name if record_name is not None else config.save_parameters.run_name
 
-    output_dir = f"raw_results/{active_env_name}/{_version}/{run_type}/{_run_name}"
+    if study_name is not None:
+        output_dir = f"raw_results/{active_env_name}/{_version}/{run_type}/{study_name}/{_run_name}"
+    else:
+        output_dir = f"raw_results/{active_env_name}/{_version}/{run_type}/{_run_name}"
     os.makedirs(output_dir, exist_ok=True)
     OmegaConf.save(config, os.path.join(output_dir, "run_config.yaml"))
 
     current_seed = seed if seed is not None else config.project.seed
     total_episodes = n_episodes if n_episodes is not None else config.training.n_episodes
 
-    env_params = {}
-    if 'lunar_params' in env_config:
-        env_params = OmegaConf.to_container(env_config.lunar_params)
-    env = gym.make(active_env_name, **env_params)
-    
-    agent = A2CAgent(state_size=env_config.state_size, action_size=agent_action_size, config=config, seed=current_seed)
+    agent = A2CAgent(state_size=agent_state_size, action_size=agent_action_size, config=config, seed=current_seed)
     
     lr = config.training.get('lr_start', config.agent.lr)
     agent.update_lr(lr)
@@ -216,60 +280,201 @@ def a2c(config, seed=None, record_name=None, n_episodes=None, run_type='train'):
     best_score = -float('inf')
     time_ref = time.time()
 
-    n_steps = config.agent.get('n_steps', 1)
-    memory = deque(maxlen=n_steps)
+    n_steps = config.agent.get('n_steps', 20)
+    memory = []
 
-    for i_episode in range(1, total_episodes + 1):
-        state, info = env.reset(seed=current_seed*total_episodes+i_episode)
-        score = 0
+    state, info = env.reset(seed=current_seed)
+    episode_rewards = np.zeros(num_envs)
+    
+    completed_episodes = 0
+    last_logged_episode = 0
+    episodes_completed_this_batch = 0
+
+    while completed_episodes < total_episodes:
         episode_state_vals = []
         
-        for t in range(config.training.max_t):
-            # Log state value from the critic
-            state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(device)
+        # Collect n_steps of transitions across all parallel environments
+        for t in range(n_steps):
+            state_tensor = torch.from_numpy(state).float().to(device)
             agent.network.eval()
             with torch.no_grad():
                 _, state_value = agent.network(state_tensor)
             agent.network.train()
-            episode_state_vals.append(state_value.item())
+            episode_state_vals.append(state_value.mean().item())
 
-            # A2C's act method handles exploration by sampling from the learned policy distribution
+            agent_action = agent.act(state)
+
+            env_action = agent_action.copy()
+            if use_fake_actions and not env_config.get('is_continuous', False):
+                map_to_action = env_config.get('fake_action_maps_to', 0)
+                env_action[agent_action >= real_action_size] = map_to_action
+
+            next_state, reward, terminated, truncated, info = env.step(env_action)
+            done = terminated | truncated
+                
+            memory.append((state, agent_action, reward, next_state, done))
+            
+            state = next_state
+            episode_rewards += reward
+            
+            # Process environments that completed an episode
+            for i, d in enumerate(done):
+                if d:
+                    scores_window.append(episode_rewards[i])
+                    scores.append(episode_rewards[i])
+                    episode_rewards[i] = 0
+                    completed_episodes += 1
+                    episodes_completed_this_batch += 1
+
+        # Learn from the batched memory
+        agent.learn_from_batch(memory)
+        memory.clear()
+            
+        if len(episode_state_vals) > 0:
+            avg_state_value_history.append(np.mean(episode_state_vals))
+        else:
+            avg_state_value_history.append(0 if len(avg_state_value_history)==0 else avg_state_value_history[-1])
+
+        current_avg = np.mean(scores_window) if len(scores_window) > 0 else -float('inf')
+        
+        for _ in range(episodes_completed_this_batch):
+            lr = max(config.training.get('lr_end', 0.0), config.training.get('lr_decay', 1.0) * lr)
+            agent.update_lr(lr)
+        episodes_completed_this_batch = 0
+
+        if current_avg > best_score and completed_episodes > 100:
+            best_score = current_avg
+            torch.save(agent.network.state_dict(), f'{output_dir}/{_run_name}_local_best.pth')
+
+        if completed_episodes > last_logged_episode:
+            if n_episodes is None:
+                print(f'\rEpisode {completed_episodes}\tAverage Score: {current_avg:.2f}', end="")
+                if completed_episodes - last_logged_episode >= 100 or completed_episodes % 100 == 0:
+                    print(f'\rEpisode {completed_episodes}\tAverage Score: {current_avg:.2f}\tTime: {time.time() - time_ref:.0f} seconds = {(time.time() - time_ref)/60:.0f} minutes')
+                    last_logged_episode = completed_episodes
+            else: 
+                if completed_episodes - last_logged_episode >= 10 or completed_episodes % 10 == 0:
+                    print(f'\rEpisode {completed_episodes}\tAverage Score: {current_avg:.2f}\tTime: {time.time() - time_ref:.0f} seconds = {(time.time() - time_ref)/60:.0f} minutes', end="")
+                    last_logged_episode = completed_episodes
+                if completed_episodes % 250 == 0:
+                    print(f'')
+
+    env.close()
+    torch.save(agent.network.state_dict(), f'{output_dir}/{_run_name}_last.pth')
+
+    # Truncate scores to ensure consistent length, as vector envs might overshoot
+    scores = scores[:total_episodes]
+
+    # Interpolate state value history to match the number of episodes for consistent plotting
+    if len(avg_state_value_history) > 1:
+        x_orig = np.linspace(0, total_episodes, num=len(avg_state_value_history), endpoint=False)
+        x_new = np.arange(total_episodes)
+        interpolated_history = np.interp(x_new, x_orig, avg_state_value_history)
+        avg_state_value_history = interpolated_history.tolist()
+    elif avg_state_value_history: # if it has one element
+        avg_state_value_history = [avg_state_value_history[0]] * total_episodes
+
+    # For A2C, the critic's state value is the equivalent of the Q-value for logging
+    # Return empty list for target Q-values to maintain consistent output signature
+    return scores, [], avg_state_value_history
+
+def reinforce(config, seed=None, record_name=None, n_episodes=None, run_type='train', study_name=None):
+    """REINFORCE (Monte Carlo Policy Gradient) training loop."""
+    active_env_name = config.active_env
+    env_config = config.environments[active_env_name]
+
+    # Initialize Environment
+    env_params = {}
+    if 'lunar_params' in env_config:
+        env_params = OmegaConf.to_container(env_config.lunar_params)
+    env = gym.make(active_env_name, **env_params)
+    
+    if not env_config.get('is_continuous', False) and isinstance(env.action_space, gym.spaces.Box):
+        bins = env_config.get('discrete_bins', 3)
+        env = DiscretizeBoxWrapper(env, bins)
+
+    # --- Fake Actions Logic ---
+    if env_config.get('is_continuous', False):
+        real_action_size = env.action_space.shape[0]
+    else:
+        real_action_size = env.action_space.n
+        
+    agent_action_size = real_action_size
+    use_fake_actions = env_config.get('use_fake_actions', False)
+    if use_fake_actions:
+        num_fake = env_config.get('num_fake_actions', 0)
+        agent_action_size += num_fake
+
+    agent_state_size = env.observation_space.shape[0]
+
+    _version = config.project.version.replace(".", "-")
+    _run_name = record_name if record_name is not None else config.save_parameters.run_name
+
+    if study_name is not None:
+        output_dir = f"raw_results/{active_env_name}/{_version}/{run_type}/{study_name}/{_run_name}"
+    else:
+        output_dir = f"raw_results/{active_env_name}/{_version}/{run_type}/{_run_name}"
+    os.makedirs(output_dir, exist_ok=True)
+    OmegaConf.save(config, os.path.join(output_dir, "run_config.yaml"))
+
+    current_seed = seed if seed is not None else config.project.seed
+    total_episodes = n_episodes if n_episodes is not None else config.training.n_episodes
+
+    agent = ReinforceAgent(state_size=agent_state_size, action_size=agent_action_size, config=config, seed=current_seed)
+    
+    lr = config.training.get('lr_start', config.agent.lr)
+    agent.update_lr(lr)
+
+    scores = []
+    scores_window = deque(maxlen=100)
+
+    best_score = -float('inf')
+    time_ref = time.time()
+
+    for i_episode in range(1, total_episodes + 1):
+        state, info = env.reset(seed=current_seed*total_episodes+i_episode)
+        score = 0
+        memory = []
+        
+        for t in range(config.training.max_t):
             agent_action = agent.act(state)
 
             # Map agent action to real environment action
-            env_action = agent_action
-            if use_fake_actions and not env_config.get('is_continuous', False) and agent_action >= real_action_size:
-                map_to_action = env_config.get('fake_action_maps_to', 0)
-                env_action = map_to_action
+            if env_config.get('is_continuous', False):
+                env_action = agent_action.copy()
+            else:
+                env_action = agent_action
+                if use_fake_actions and agent_action >= real_action_size:
+                    map_to_action = env_config.get('fake_action_maps_to', 0)
+                    env_action = map_to_action
 
             next_state, reward, terminated, truncated, info = env.step(env_action)
             done = terminated or truncated
+
+            # --- Sparse Reward Logic for LunarLander ---
+            is_lunar_lander_sparse = (active_env_name == "LunarLander-v3" and
+                                      env_config.get('sparse_reward', False))
+            if is_lunar_lander_sparse and not terminated:
+                reward = 0.0
             
-            memory.append((state, agent_action, reward, next_state, done))
-            
-            # If we have enough steps OR the episode is done, learn from the batch
-            if len(memory) == n_steps or (done and len(memory) > 0):
-                agent.learn_from_batch(list(memory))
-                memory.clear()
+            memory.append((state, agent_action, reward))
                 
             state = next_state
             score += reward
             if done:
                 break 
                 
+        # Learn after full episode
+        agent.learn_from_episode(memory)
+        
         scores_window.append(score)       
         scores.append(score)
-        
-        if len(episode_state_vals) > 0:
-            avg_state_value_history.append(np.mean(episode_state_vals))
-        else:
-            avg_state_value_history.append(0 if len(avg_state_value_history)==0 else avg_state_value_history[-1])
-
-        current_avg = np.mean(scores_window)
         
         lr = max(config.training.get('lr_end', 0.0), config.training.get('lr_decay', 1.0) * lr)
         agent.update_lr(lr)
 
+        current_avg = np.mean(scores_window)
+        
         if current_avg > best_score and i_episode > 100:
             best_score = current_avg
             torch.save(agent.network.state_dict(), f'{output_dir}/{_run_name}_local_best.pth')
@@ -278,16 +483,29 @@ def a2c(config, seed=None, record_name=None, n_episodes=None, run_type='train'):
             print(f'\rEpisode {i_episode}\tAverage Score: {current_avg:.2f}', end="")
             if i_episode % 100 == 0:
                 print(f'\rEpisode {i_episode}\tAverage Score: {np.mean(scores_window):.2f}\tTime: {time.time() - time_ref:.0f} seconds = {(time.time() - time_ref)/60:.0f} minutes')
-        else: 
+                
+            if i_episode % 250 == 0:
+                torch.save(agent.network.state_dict(), f'{output_dir}/{_run_name}_{i_episode}-eps.pth')
+                
+            if current_avg >= env_config.win_condition:
+                print(f'\nEnvironment solved in {i_episode-100:d} episodes!\tAverage Score: {np.mean(scores_window):.2f}')
+                torch.save(agent.network.state_dict(), f'{output_dir}/{_run_name}_best.pth')
+                break
+        else:
             if i_episode % 10 == 0:
                 print(f'\rEpisode {i_episode}\tAverage Score: {current_avg:.2f}\tTime: {time.time() - time_ref:.0f} seconds = {(time.time() - time_ref)/60:.0f} minutes', end="")
             if i_episode % 250 == 0:
                 print(f'')
 
+    if len(scores) < total_episodes:
+        padding_needed = total_episodes - len(scores)
+        if scores:
+            scores.extend([scores[-1]] * padding_needed)
+        else:
+            scores.extend([0] * padding_needed)
+
     torch.save(agent.network.state_dict(), f'{output_dir}/{_run_name}_last.pth')    
-    # For A2C, the critic's state value is the equivalent of the Q-value for logging
-    # Return empty list for target Q-values to maintain consistent output signature
-    return scores, [], avg_state_value_history
+    return scores, [], []
 
 def modify_reward(reward, action):
     # Custom reward shaping to encourage unique landing behavior

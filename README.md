@@ -27,20 +27,28 @@ It includes a thorough ablation study to study the effect of the concepts implem
 * **Framework:** PyTorch
 * **Action Selection:** $\epsilon$-greedy or Boltzmann exploration, with decay schedules.
 * **Optimization:** Mean Squared Error (MSE) Loss with Adam Optimizer.
-* **core concepts implemented:**
-  * DQN 
-  * DDQN
-  * Dueling DQN
-  * Prioritized Experience Replay (PER)
 
-### Key RL Features Included:
-1. **Experience Replay Buffer:** Breaks the correlation of sequential observations by randomly sampling past experiences (State, Action, Reward, Next State) to train the network.
-2. **Fixed Q-Targets:** Utilizes a "Local" network for active playing/learning and a frozen "Target" network for calculating the expected future rewards. This prevents the moving target problem and stabilizes training.
-3. **Double DQN:** Use the local network for action prediction and the target network as Q value estimator.
+## Algorithms & Concepts Implemented
+
+* **Deep Q-Network (DQN):** A foundational value-based algorithm that uses a neural network to approximate Q-values, learning the expected future rewards for each action in a given state.
+  * **Experience Replay Buffer:** Stores past experiences (state, action, reward, next state) and samples them randomly during training to break the correlation between sequential observations.
+  * **Target Network:** Utilizes a separate, slowly-updating "Target" network to calculate expected target Q-values, preventing the moving target problem and stabilizing training.
+  * **Double DQN (DDQN):** An improvement over standard DQN that separates action selection (using the local network) from action evaluation (using the target network) to mitigate the overestimation of Q-values.
+  * **Dueling DQN:** Modifies the network architecture to estimate the state value and the advantages of each action separately before combining them. This helps the agent learn which states are inherently valuable independent of the action taken.
+  * **Prioritized Experience Replay (PER):** Enhances the standard replay buffer by sampling experiences with a higher Temporal Difference (TD) error more frequently, focusing the agent's learning on the most informative transitions.
+* **REINFORCE:** A classic policy gradient algorithm that directly optimizes the agent's policy by using the total episode return to scale the gradients of the log probabilities of the actions taken.
+* **Advantage Actor-Critic (A2C):** A hybrid architecture featuring an "Actor" that determines the policy and a "Critic" that evaluates actions by estimating state values.
+  * **n-step Returns:** Instead of looking just one step ahead, the critic evaluates returns over `n` consecutive steps to balance bias and variance in value estimation.
+  * **Generalized Advantage Estimation (GAE):** An advanced technique for computing action advantages that uses an exponentially weighted average of n-step returns to smoothly trade off between bias and variance, leading to more stable policy updates.
+  * **Orthogonal Initialization:** A weight initialization scheme that helps prevent exploding or vanishing gradients by preserving the variance of activations across layers, leading to more stable training.
+  * **Gradient Clipping:** A technique to prevent exploding gradients by scaling down gradients if their norm exceeds a predefined threshold, ensuring more stable weight updates during optimization.
+  * **Vectorized Environments:** Uses multiple environments in parallel to collect batched, uncorrelated experiences simultaneously, heavily speeding up convergence.
+  * **Shared Backbone Architecture:** An optional configuration where the Actor and Critic share initial layers to improve feature extraction and sample efficiency.
+  * **TD(λ) Returns:** An efficient integration that computes Critic targets directly from GAE advantages, providing robust value estimations.
 
 ## Training Results & Analysis
  
-Examples of lunard lander agent:
+Examples of lunar lander agent:
 
 an example of score (total reward) vs. episode:
 ![alt text](images/buffer_size_ablation_1-2-7/scores_comparison.png)
