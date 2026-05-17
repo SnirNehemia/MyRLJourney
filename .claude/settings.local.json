@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"d:\\\\python\\\\Lunar-lander\" -MaxDepth 1 -Name)"
+    ]
+  }
+}

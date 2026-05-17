@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning, module="torchrl")
+
 import numpy as np
 import random
 from collections import namedtuple, deque
@@ -29,7 +32,11 @@ class Agent():
         self.config = config
         self.state_size = state_size
         self.action_size = action_size
-        self.seed = random.seed(seed if seed is not None else self.config.project.seed)
+        seed_val = seed if seed is not None else self.config.project.seed
+        random.seed(seed_val)
+        np.random.seed(seed_val)
+        torch.manual_seed(seed_val)
+        self.seed = seed_val
 
         # Get active environment config
         active_env_name = self.config.active_env
@@ -153,17 +160,17 @@ class Agent():
         if strategy == 'epsilon_greedy':
             # Epsilon-greedy action selection
             if random.random() > exploration_param: # exploration_param is epsilon
-                return np.argmax(action_values.cpu().data.numpy())
+                return np.argmax(action_values.cpu().detach().numpy())
             else:
                 return random.choice(np.arange(self.action_size))
         elif strategy == 'boltzmann':
             # Boltzmann exploration
             temperature = max(exploration_param, 1e-8) # exploration_param is temperature, ensure not zero
-            probs = F.softmax(action_values / temperature, dim=1).cpu().data.numpy().squeeze()
+            probs = F.softmax(action_values / temperature, dim=1).cpu().detach().numpy().squeeze()
             return np.random.choice(np.arange(self.action_size), p=probs)
         else:
             # Default to greedy for testing (exploration_param=0) or unknown strategies
-            return np.argmax(action_values.cpu().data.numpy())
+            return np.argmax(action_values.cpu().detach().numpy())
 
     def learn(self, experiences, gamma, tau, per_indices=None, per_weights=None):
         """Update value parameters using given batch of experience tuples.
@@ -262,8 +269,9 @@ class ReplayBuffer:
         self.memory = deque(maxlen=buffer_size)  
         self.batch_size = batch_size
         self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done"])
-        self.seed = random.seed(seed)
-    
+        random.seed(seed)
+        self.seed = seed
+
     def add(self, state, action, reward, next_state, done):
         """Add a new experience to memory."""
         e = self.experience(state, action, reward, next_state, done)
@@ -293,13 +301,16 @@ class A2CAgent:
         self.config = config
         self.state_size = state_size
         self.action_size = action_size
-        self.seed = random.seed(seed if seed is not None else self.config.project.seed)
-        torch.manual_seed(seed if seed is not None else self.config.project.seed)
-        
+        seed_val = seed if seed is not None else self.config.project.seed
+        random.seed(seed_val)
+        np.random.seed(seed_val)
+        torch.manual_seed(seed_val)
+        self.seed = seed_val
+
         active_env_name = self.config.active_env
         env_config = self.config.environments[active_env_name]
         self.is_continuous = env_config.get('is_continuous', False)
-        
+
         class ActorCritic(torch.nn.Module):
             def __init__(self, state_size, action_size, hidden_size, is_continuous, share_network=False):
                 super().__init__()
@@ -408,8 +419,13 @@ class A2CAgent:
         share_network = self.config.agent.get('share_network', False)
         self.network = ActorCritic(state_size, action_size, env_config.network.hidden_size, self.is_continuous, share_network).to(device)
         self.network.init_weights()
-        self.optimizer = optim.Adam(self.network.parameters(), lr=config.agent.get('lr', 0.005))
+        # Separate optimizers: critic uses a lower LR for stable value estimation.
+        actor_params = [p for n, p in self.network.named_parameters() if 'actor' in n]
+        critic_params = [p for n, p in self.network.named_parameters() if 'critic' in n or 'shared' in n]
+        self.actor_optimizer = optim.Adam(actor_params, lr=config.agent.get('lr', 0.001))
+        self.critic_optimizer = optim.Adam(critic_params, lr=config.agent.get('critic_lr', 0.0003))
         self.gamma = config.agent.gamma
+        self.entropy_weight = config.agent.get('entropy_weight_start', 0.01)
 
     def act(self, state, exploration_param=None):
         """Returns actions for given state as per current policy."""
@@ -428,20 +444,32 @@ class A2CAgent:
         
         if self.is_continuous:
             action = dist.mean if exploration_param == 0.0 else dist.sample()
-            action = action.cpu().data.numpy()
+            action = action.cpu().detach().numpy()
             return action.flatten() if is_single else action
         else:
             action = torch.argmax(dist.logits, dim=-1) if exploration_param == 0.0 else dist.sample()
-            action = action.cpu().data.numpy()
+            action = action.cpu().detach().numpy()
             return action.item() if is_single else action
 
     def update_lr(self, lr):
-        """Update learning rate for the optimizer"""
-        for param_group in self.optimizer.param_groups:
+        """Update learning rate for the actor optimizer; critic LR stays fixed."""
+        for param_group in self.actor_optimizer.param_groups:
             param_group['lr'] = lr
 
+    def update_entropy_weight(self, entropy_weight):
+        self.entropy_weight = entropy_weight
+
     def learn_from_batch(self, memory):
-        """Update policy and value parameters using a batch of n-step experiences with GAE."""
+        """Update policy and value parameters using a batch of n-step experiences with GAE.
+
+        Structured as three phases:
+          1. Compute frozen TD-lambda return targets (no_grad).
+          2. Train the critic K times against those fixed targets.
+          3. Recompute advantages from the improved critic; update the actor once.
+
+        Separating critic and actor updates means K>1 critic epochs are valid on-policy:
+        the frozen targets and the single actor step preserve the on-policy constraint.
+        """
         states, actions, rewards, next_states, dones = zip(*memory)
 
         # Convert lists to tensors (Shape: n_steps, num_envs, ...)
@@ -450,49 +478,76 @@ class A2CAgent:
             actions_tensor = torch.tensor(np.array(actions), dtype=torch.float32).to(device)
         else:
             actions_tensor = torch.tensor(np.array(actions), dtype=torch.long).to(device)
-            
+
         rewards_tensor = torch.tensor(np.array(rewards), dtype=torch.float32).to(device)
         dones_tensor = torch.tensor(np.array(dones), dtype=torch.float32).to(device)
 
         n_steps, num_envs = states_tensor.shape[0], states_tensor.shape[1]
-
-        # Forward pass on flattened states for GPU efficiency
         states_flat = states_tensor.view(n_steps * num_envs, -1)
-        dists, values_flat = self.network(states_flat)
-        values = values_flat.view(n_steps, num_envs) # V(s_0) ... V(s_{N-1})
-
         last_state_tensor = torch.from_numpy(next_states[-1]).float().to(device)
-        with torch.no_grad():
-            _, last_value = self.network(last_state_tensor)
-            last_value = last_value.view(num_envs)
 
-        # --- Advantage Calculation (using GAE) ---
         gae_lambda = self.config.agent.get('gae_lambda', 0.95)
-        advantages = torch.zeros(n_steps, num_envs).to(device)
+        critic_weight = self.config.agent.get('critic_loss_weight', 0.5)
+        k_critic_epochs = self.config.agent.get('k_critic_epochs', 1)
+        actor_params = [p for n, p in self.network.named_parameters() if 'actor' in n]
+        critic_params = [p for n, p in self.network.named_parameters() if 'critic' in n or 'shared' in n]
+
+        # --- Phase 1: Compute frozen GAE targets (returns) ---
+        # All K critic epochs train against these fixed targets; they do not change.
+        with torch.no_grad():
+            _, values_init_flat = self.network(states_flat)
+            values_init = values_init_flat.view(n_steps, num_envs)
+            _, last_value_init = self.network(last_state_tensor)
+            last_value_init = last_value_init.view(num_envs)
+
+            all_values_init = torch.cat((values_init, last_value_init.unsqueeze(0)), dim=0)
+            gae = 0
+            adv_init = torch.zeros(n_steps, num_envs).to(device)
+            for t in reversed(range(n_steps)):
+                delta = rewards_tensor[t] + self.gamma * all_values_init[t+1] * (1 - dones_tensor[t]) - all_values_init[t]
+                gae = delta + self.gamma * gae_lambda * gae * (1 - dones_tensor[t])
+                adv_init[t] = gae
+            returns = (adv_init + values_init).view(-1)  # frozen targets for all K epochs
+
+        # --- Phase 2: K critic-only update epochs ---
+        for _ in range(k_critic_epochs):
+            _, values_flat = self.network(states_flat)
+            critic_loss = F.smooth_l1_loss(values_flat.view(-1), returns)
+            self.actor_optimizer.zero_grad()
+            self.critic_optimizer.zero_grad()
+            (critic_weight * critic_loss).backward()
+            critic_grad_norm = torch.nn.utils.clip_grad_norm_(critic_params, max_norm=1.0).item()
+            self.critic_optimizer.step()
+
+        # --- Phase 3: Single actor update using improved critic values ---
+        # Fresh forward pass: dists carries gradient for log_prob; values are detached for GAE.
+        dists, values_final_flat = self.network(states_flat)
+        values_final = values_final_flat.detach().view(n_steps, num_envs)
+        with torch.no_grad():
+            _, last_value_final = self.network(last_state_tensor)
+            last_value_final = last_value_final.view(num_envs)
+
+        all_values_final = torch.cat((values_final, last_value_final.unsqueeze(0)), dim=0)
         gae = 0
-        
-        values_detached = values.detach()
-        last_value_detached = last_value.detach()
-        all_values_detached = torch.cat((values_detached, last_value_detached.unsqueeze(0)), dim=0) # (n_steps+1, num_envs)
-        
+        advantages = torch.zeros(n_steps, num_envs).to(device)
         for t in reversed(range(n_steps)):
-            delta = rewards_tensor[t] + self.gamma * all_values_detached[t+1] * (1 - dones_tensor[t]) - all_values_detached[t]
+            delta = rewards_tensor[t] + self.gamma * all_values_final[t+1] * (1 - dones_tensor[t]) - all_values_final[t]
             gae = delta + self.gamma * gae_lambda * gae * (1 - dones_tensor[t])
             advantages[t] = gae
-        
-        # --- Critic Loss Calculation (using TD(lambda) returns) ---
-        returns = advantages + values_detached
 
-        # Flatten for loss computation
-        values = values.view(-1)
-        returns = returns.view(-1)
-        advantages = advantages.view(-1)
-        
-        critic_loss = F.smooth_l1_loss(values, returns)
+        # Global normalization with a min-std guard.
+        # Per-env normalization (dim=0) zeros out advantages when all envs are hovering
+        # (all values nearly identical → tiny per-env std → amplified noise).
+        # Skipping normalization when std is very small lets raw small-negative advantages
+        # reach the actor, giving a weak but correct gradient signal.
+        adv_std = advantages.std()
+        if adv_std > 1e-3:
+            advantages = (advantages - advantages.mean()) / (adv_std + 1e-8)
+        advantages = advantages.view(-1).clamp(-5.0, 5.0)
 
-        # --- Actor Loss Calculation ---
-        if len(advantages) > 1:
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8) # Normalize advantages
+        # Explained variance after K critic epochs against the frozen returns.
+        with torch.no_grad():
+            ev = (1.0 - (returns - values_final_flat.detach().view(-1)).var() / (returns.var() + 1e-8)).item()
 
         if self.is_continuous:
             actions_flat = actions_tensor.view(n_steps * num_envs, -1)
@@ -501,25 +556,34 @@ class A2CAgent:
 
         log_probs = dists.log_prob(actions_flat)
         if self.is_continuous:
-            log_probs = log_probs.sum(dim=-1) # Sum independent action probabilities
+            log_probs = log_probs.sum(dim=-1)
             entropy_loss = dists.entropy().sum(dim=-1).mean()
         else:
             entropy_loss = dists.entropy().mean()
-        
-        actor_loss = -(log_probs * advantages.detach()).mean()
 
-        # --- Total Loss ---
-        critic_weight = self.config.agent.get('critic_loss_weight', 0.5)
-        entropy_weight = self.config.agent.get('entropy_weight', 0.01)
-        loss = actor_loss + critic_weight * critic_loss - entropy_weight * entropy_loss
-        
-        self.optimizer.zero_grad()
+        entropy_weight = self.entropy_weight
+        actor_loss = -(log_probs * advantages.detach()).mean()
+        # Critic already updated K times in Phase 2; no critic term here.
+        loss = actor_loss - entropy_weight * entropy_loss
+
+        self.actor_optimizer.zero_grad()
+        self.critic_optimizer.zero_grad()
         loss.backward()
-        # Clip gradients to prevent exploding weights caused by massive critic MSE early in training
-        torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=1.0)
-        self.optimizer.step()
-        
-        return loss.item()
+        actor_grad_norm = torch.nn.utils.clip_grad_norm_(actor_params, max_norm=1.0).item()
+        self.actor_optimizer.step()
+
+        return {
+            'actor_loss':       actor_loss.item(),
+            'critic_loss':      (critic_weight * critic_loss).item(),
+            'entropy_loss':     (entropy_weight * entropy_loss).item(),
+            'raw_entropy':      entropy_loss.item(),
+            'entropy_weight':   entropy_weight,
+            'ev':               ev,
+            'actor_grad_norm':  actor_grad_norm,
+            'critic_grad_norm': critic_grad_norm,
+            'values_sample':    values_final_flat.detach().view(-1).cpu().numpy(),
+            'returns_sample':   returns.detach().cpu().numpy(),
+        }
 
 class ReinforceAgent:
     """Interacts with and learns from the environment using REINFORCE (Monte Carlo Policy Gradient)."""
@@ -528,13 +592,16 @@ class ReinforceAgent:
         self.config = config
         self.state_size = state_size
         self.action_size = action_size
-        self.seed = random.seed(seed if seed is not None else self.config.project.seed)
-        torch.manual_seed(seed if seed is not None else self.config.project.seed)
-        
+        seed_val = seed if seed is not None else self.config.project.seed
+        random.seed(seed_val)
+        np.random.seed(seed_val)
+        torch.manual_seed(seed_val)
+        self.seed = seed_val
+
         active_env_name = self.config.active_env
         env_config = self.config.environments[active_env_name]
         self.is_continuous = env_config.get('is_continuous', False)
-        
+
         class PolicyNetwork(torch.nn.Module):
             def __init__(self, state_size, action_size, hidden_size, is_continuous):
                 super().__init__()
@@ -606,11 +673,11 @@ class ReinforceAgent:
         
         if self.is_continuous:
             action = dist.mean if exploration_param == 0.0 else dist.sample()
-            action = action.cpu().data.numpy()
+            action = action.cpu().detach().numpy()
             return action.flatten() if is_single else action
         else:
             action = torch.argmax(dist.logits, dim=-1) if exploration_param == 0.0 else dist.sample()
-            action = action.cpu().data.numpy()
+            action = action.cpu().detach().numpy()
             return action.item() if is_single else action
 
     def update_lr(self, lr):

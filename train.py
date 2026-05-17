@@ -86,8 +86,10 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
     
     scores = []
     scores_window = deque(maxlen=100)
-    q_values_history = [] 
+    q_values_history = []
     avg_max_q_history = []
+    grad_updates_at_score = []  # cumulative gradient updates at each episode completion
+    grad_updates = 0
 
     # --- Exploration Parameters ---
     exploration_cfg = config.training.exploration
@@ -108,12 +110,15 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
     best_score = -float('inf')
     time_ref = time.time()
 
+    is_lunar_lander_sparse = (active_env_name == "LunarLander-v3" and
+                              env_config.get('sparse_reward', False))
+
     for i_episode in range(1, total_episodes + 1):
-        state, info = env.reset(seed=current_seed*total_episodes+i_episode)
+        state, info = env.reset(seed=current_seed + i_episode)
         score = 0
         episode_q_vals = []
         episode_max_q_vals = []
-        
+
         for t in range(config.training.max_t):
             # Get max predicted Q-value for the current state (for logging)
             state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(device)
@@ -134,29 +139,22 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
             next_state, reward, terminated, truncated, info = env.step(env_action)
             done = terminated or truncated
 
-            # --- Sparse Reward Logic for LunarLander ---
-            is_lunar_lander_sparse = (active_env_name == "LunarLander-v3" and
-                                      env_config.get('sparse_reward', False))
             if is_lunar_lander_sparse and not terminated:
                 reward = 0.0
-            
-            # The agent.step call needs the original agent_action to learn correctly
+
             q_val = agent.step(state, agent_action, reward, next_state, done, tau)
-            # # use this if i need to return td-error
-            # if agent.use_per:
-            #     q_val, _ = agent.step(state, agent_action, reward, next_state, done, tau)
-            # else:
-            #     q_val = agent.step(state, agent_action, reward, next_state, done, tau)
             if q_val is not None:
                 episode_q_vals.append(q_val)
-                
+                grad_updates += 1
+
             state = next_state
             score += reward
             if done:
-                break 
-                
-        scores_window.append(score)       
+                break
+
+        scores_window.append(score)
         scores.append(score)
+        grad_updates_at_score.append(grad_updates)
         
         if len(episode_q_vals) > 0:
             q_values_history.append(np.mean(episode_q_vals))
@@ -206,17 +204,20 @@ def dqn(config, DQN_type=None, seed=None, record_name=None, n_episodes=None, run
     # Pad results if training ended early to ensure consistent lengths for plotting
     if len(scores) < total_episodes:
         padding_needed = total_episodes - len(scores)
-        if scores: # Check if scores is not empty
+        if scores:
             scores.extend([scores[-1]] * padding_needed)
             q_values_history.extend([q_values_history[-1]] * padding_needed)
             avg_max_q_history.extend([avg_max_q_history[-1]] * padding_needed)
-        else: # Handle case where no episodes were completed
+            grad_updates_at_score.extend([grad_updates_at_score[-1]] * padding_needed)
+        else:
             scores.extend([0] * padding_needed)
             q_values_history.extend([0] * padding_needed)
             avg_max_q_history.extend([0] * padding_needed)
+            grad_updates_at_score.extend([0] * padding_needed)
 
-    torch.save(agent.qnetwork_local.state_dict(), f'{output_dir}/{_run_name}_last.pth')    
-    return scores, q_values_history, avg_max_q_history
+    torch.save(agent.qnetwork_local.state_dict(), f'{output_dir}/{_run_name}_last.pth')
+    env.close()
+    return scores, q_values_history, avg_max_q_history, grad_updates_at_score, {}
 
 def a2c(config, seed=None, record_name=None, n_episodes=None, run_type='train', study_name=None):
     """Advantage Actor-Critic (A2C) training loop."""
@@ -245,6 +246,7 @@ def a2c(config, seed=None, record_name=None, n_episodes=None, run_type='train', 
         real_action_size = dummy_env.action_space.shape[0]
     else:
         real_action_size = dummy_env.action_space.n
+    agent_state_size = dummy_env.observation_space.shape[0]
     dummy_env.close()
 
     agent_action_size = real_action_size
@@ -252,8 +254,6 @@ def a2c(config, seed=None, record_name=None, n_episodes=None, run_type='train', 
     if use_fake_actions:
         num_fake = env_config.get('num_fake_actions', 0)
         agent_action_size += num_fake
-
-    agent_state_size = dummy_env.observation_space.shape[0]
 
     _version = config.project.version.replace(".", "-")
     _run_name = record_name if record_name is not None else config.save_parameters.run_name
@@ -269,13 +269,29 @@ def a2c(config, seed=None, record_name=None, n_episodes=None, run_type='train', 
     total_episodes = n_episodes if n_episodes is not None else config.training.n_episodes
 
     agent = A2CAgent(state_size=agent_state_size, action_size=agent_action_size, config=config, seed=current_seed)
-    
+
     lr = config.training.get('lr_start', config.agent.lr)
     agent.update_lr(lr)
+    entropy_weight_start = config.agent.get('entropy_weight_start', 0.01)
+    entropy_weight_end = config.agent.get('entropy_weight_end', entropy_weight_start)
+    entropy_weight_t_anneal = config.agent.get('entropy_weight_t_anneal', 0)
+    agent.update_entropy_weight(entropy_weight_start)
 
     scores = []
     scores_window = deque(maxlen=100)
     avg_state_value_history = []
+    ev_history = []
+    actor_loss_history = []
+    critic_loss_history = []
+    entropy_loss_history = []
+    raw_entropy_history = []
+    actor_grad_history = []
+    critic_grad_history = []
+    ep_len_history = []
+    value_scatter_samples = []
+    return_scatter_samples = []
+    grad_updates_at_score = []
+    grad_updates = 0
 
     best_score = -float('inf')
     time_ref = time.time()
@@ -285,7 +301,8 @@ def a2c(config, seed=None, record_name=None, n_episodes=None, run_type='train', 
 
     state, info = env.reset(seed=current_seed)
     episode_rewards = np.zeros(num_envs)
-    
+    episode_step_counts = np.zeros(num_envs, dtype=int)
+
     completed_episodes = 0
     last_logged_episode = 0
     episodes_completed_this_batch = 0
@@ -311,25 +328,40 @@ def a2c(config, seed=None, record_name=None, n_episodes=None, run_type='train', 
 
             next_state, reward, terminated, truncated, info = env.step(env_action)
             done = terminated | truncated
-                
+
             memory.append((state, agent_action, reward, next_state, done))
-            
+
             state = next_state
             episode_rewards += reward
-            
+            episode_step_counts += 1
+
             # Process environments that completed an episode
             for i, d in enumerate(done):
                 if d:
                     scores_window.append(episode_rewards[i])
                     scores.append(episode_rewards[i])
+                    grad_updates_at_score.append(grad_updates)
+                    ep_len_history.append(int(episode_step_counts[i]))
                     episode_rewards[i] = 0
+                    episode_step_counts[i] = 0
                     completed_episodes += 1
                     episodes_completed_this_batch += 1
 
         # Learn from the batched memory
-        agent.learn_from_batch(memory)
+        d = agent.learn_from_batch(memory)
+        ev_history.append(d['ev'])
+        actor_loss_history.append(d['actor_loss'])
+        critic_loss_history.append(d['critic_loss'])
+        entropy_loss_history.append(d['entropy_loss'])
+        raw_entropy_history.append(d['raw_entropy'])
+        actor_grad_history.append(d['actor_grad_norm'])
+        critic_grad_history.append(d['critic_grad_norm'])
+        if grad_updates % 10 == 0:
+            value_scatter_samples.append(d['values_sample'])
+            return_scatter_samples.append(d['returns_sample'])
+        grad_updates += 1
         memory.clear()
-            
+
         if len(episode_state_vals) > 0:
             avg_state_value_history.append(np.mean(episode_state_vals))
         else:
@@ -340,6 +372,10 @@ def a2c(config, seed=None, record_name=None, n_episodes=None, run_type='train', 
         for _ in range(episodes_completed_this_batch):
             lr = max(config.training.get('lr_end', 0.0), config.training.get('lr_decay', 1.0) * lr)
             agent.update_lr(lr)
+        if entropy_weight_t_anneal > 0:
+            t = min(1.0, completed_episodes / entropy_weight_t_anneal)
+            entropy_weight = entropy_weight_start + (entropy_weight_end - entropy_weight_start) * t
+            agent.update_entropy_weight(entropy_weight)
         episodes_completed_this_batch = 0
 
         if current_avg > best_score and completed_episodes > 100:
@@ -362,21 +398,47 @@ def a2c(config, seed=None, record_name=None, n_episodes=None, run_type='train', 
     env.close()
     torch.save(agent.network.state_dict(), f'{output_dir}/{_run_name}_last.pth')
 
-    # Truncate scores to ensure consistent length, as vector envs might overshoot
+    # Scatter: critic V(s) prediction vs actual return G (sampled across training)
+    if value_scatter_samples:
+        all_v = np.concatenate(value_scatter_samples)
+        all_r = np.concatenate(return_scatter_samples)
+        rng = np.random.default_rng(current_seed)
+        idx = rng.choice(len(all_v), size=min(5000, len(all_v)), replace=False)
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.scatter(all_v[idx], all_r[idx], alpha=0.15, s=5)
+        lim = max(np.abs(all_v[idx]).max(), np.abs(all_r[idx]).max()) * 1.05
+        ax.plot([-lim, lim], [-lim, lim], 'r--', linewidth=1.5, label='Perfect prediction')
+        ax.set_xlabel('Critic V(s) prediction')
+        ax.set_ylabel('Actual return G')
+        ax.set_title(f'Critic Value Accuracy — {_run_name}')
+        ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{output_dir}/value_accuracy_scatter.png', dpi=150)
+        plt.close(fig)
+
+    # Truncate to ensure consistent length, as vector envs might overshoot
     scores = scores[:total_episodes]
+    grad_updates_at_score = grad_updates_at_score[:total_episodes]
 
-    # Interpolate state value history to match the number of episodes for consistent plotting
-    if len(avg_state_value_history) > 1:
-        x_orig = np.linspace(0, total_episodes, num=len(avg_state_value_history), endpoint=False)
-        x_new = np.arange(total_episodes)
-        interpolated_history = np.interp(x_new, x_orig, avg_state_value_history)
-        avg_state_value_history = interpolated_history.tolist()
-    elif avg_state_value_history: # if it has one element
-        avg_state_value_history = [avg_state_value_history[0]] * total_episodes
+    def _interp_to_episodes(history):
+        if len(history) > 1:
+            x_orig = np.linspace(0, total_episodes, num=len(history), endpoint=False)
+            return np.interp(np.arange(total_episodes), x_orig, history).tolist()
+        return ([history[0]] * total_episodes) if history else ([0] * total_episodes)
 
-    # For A2C, the critic's state value is the equivalent of the Q-value for logging
-    # Return empty list for target Q-values to maintain consistent output signature
-    return scores, [], avg_state_value_history
+    avg_state_value_history = _interp_to_episodes(avg_state_value_history)
+    loss_histories = {
+        'ev':               _interp_to_episodes(ev_history),
+        'actor':            _interp_to_episodes(actor_loss_history),
+        'critic':           _interp_to_episodes(critic_loss_history),
+        'entropy':          _interp_to_episodes(entropy_loss_history),
+        'raw_entropy':      _interp_to_episodes(raw_entropy_history),
+        'actor_grad_norm':  _interp_to_episodes(actor_grad_history),
+        'critic_grad_norm': _interp_to_episodes(critic_grad_history),
+        'ep_len':           _interp_to_episodes(ep_len_history),
+    }
+
+    return scores, [], avg_state_value_history, grad_updates_at_score, loss_histories
 
 def reinforce(config, seed=None, record_name=None, n_episodes=None, run_type='train', study_name=None):
     """REINFORCE (Monte Carlo Policy Gradient) training loop."""
@@ -427,16 +489,21 @@ def reinforce(config, seed=None, record_name=None, n_episodes=None, run_type='tr
 
     scores = []
     scores_window = deque(maxlen=100)
+    grad_updates_at_score = []
+    grad_updates = 0
 
     best_score = -float('inf')
     time_ref = time.time()
 
+    is_lunar_lander_sparse = (active_env_name == "LunarLander-v3" and
+                              env_config.get('sparse_reward', False))
+
     for i_episode in range(1, total_episodes + 1):
-        state, info = env.reset(seed=current_seed*total_episodes+i_episode)
+        state, _ = env.reset(seed=current_seed + i_episode)
         score = 0
         memory = []
-        
-        for t in range(config.training.max_t):
+
+        for _ in range(config.training.max_t):
             agent_action = agent.act(state)
 
             # Map agent action to real environment action
@@ -448,27 +515,26 @@ def reinforce(config, seed=None, record_name=None, n_episodes=None, run_type='tr
                     map_to_action = env_config.get('fake_action_maps_to', 0)
                     env_action = map_to_action
 
-            next_state, reward, terminated, truncated, info = env.step(env_action)
+            next_state, reward, terminated, truncated, _ = env.step(env_action)
             done = terminated or truncated
 
-            # --- Sparse Reward Logic for LunarLander ---
-            is_lunar_lander_sparse = (active_env_name == "LunarLander-v3" and
-                                      env_config.get('sparse_reward', False))
             if is_lunar_lander_sparse and not terminated:
                 reward = 0.0
-            
+
             memory.append((state, agent_action, reward))
-                
+
             state = next_state
             score += reward
             if done:
-                break 
-                
+                break
+
         # Learn after full episode
         agent.learn_from_episode(memory)
-        
-        scores_window.append(score)       
+        grad_updates += 1
+
+        scores_window.append(score)
         scores.append(score)
+        grad_updates_at_score.append(grad_updates)
         
         lr = max(config.training.get('lr_end', 0.0), config.training.get('lr_decay', 1.0) * lr)
         agent.update_lr(lr)
@@ -501,11 +567,14 @@ def reinforce(config, seed=None, record_name=None, n_episodes=None, run_type='tr
         padding_needed = total_episodes - len(scores)
         if scores:
             scores.extend([scores[-1]] * padding_needed)
+            grad_updates_at_score.extend([grad_updates_at_score[-1]] * padding_needed)
         else:
             scores.extend([0] * padding_needed)
+            grad_updates_at_score.extend([0] * padding_needed)
 
-    torch.save(agent.network.state_dict(), f'{output_dir}/{_run_name}_last.pth')    
-    return scores, [], []
+    torch.save(agent.network.state_dict(), f'{output_dir}/{_run_name}_last.pth')
+    env.close()
+    return scores, [], [], grad_updates_at_score, {}
 
 def modify_reward(reward, action):
     # Custom reward shaping to encourage unique landing behavior
@@ -539,7 +608,7 @@ if __name__ == '__main__':
         print(f"Warning: could not find function '{algo_to_run}' in train.py. Falling back to dqn.")
         algo_func = dqn
 
-    scores, q_values, avg_max_q_values = algo_func(config, record_name=record_name, run_type='train', seed=seed)
+    scores, q_values, avg_max_q_values, _, _ = algo_func(config, record_name=record_name, run_type='train', seed=seed)
     
     # Plot the learning curve
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 9), sharex=True)

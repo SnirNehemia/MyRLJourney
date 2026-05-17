@@ -485,10 +485,10 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
                 clips_with_text.append(black_clip)
 
         final_clip = clips_array([clips_with_text[:2], clips_with_text[2:]])
-        gif_path = os.path.join(study_summary_dir, f"{study_name}_seed{model_seed}_comparison.gif")
-        final_clip.write_gif(gif_path, fps=20)
-        
-        print(f"\nSuccess! GIF saved to {gif_path}")
+        video_path = os.path.join(study_summary_dir, f"{study_name}_seed{model_seed}_comparison.mp4")
+        final_clip.write_videofile(video_path, fps=20, codec="libx264", audio=False, logger=None)
+
+        print(f"\nSuccess! Video saved to {video_path}")
 
 if __name__ == '__main__':
     make_gifs_for_study()

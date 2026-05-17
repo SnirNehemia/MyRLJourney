@@ -2,7 +2,9 @@ from run_ablation import run_ablation_study
 from test_ablation import test_ablation
 from make_gif import make_gifs_for_study
 import time
+from omegaconf import OmegaConf
 
+config = OmegaConf.load("config.yaml")
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning, module="torchrl")
 
@@ -29,11 +31,12 @@ def run_full_pipeline():
     print(f'Ablation Testing time: {(time.time() - run_time)/60:.0f} minutes = {(time.time() - run_time)/60/60:.1f} hours')
     run_time = time.time()
 
-    print("\n[Step 3/3] Generating Comparison GIFs...")
-    make_gifs_for_study()
-    print("\n[Step 3/3] Finished Generating GIFs.")
-    print(f'Ablation GIF generation time: {(time.time() - run_time)/60:.0f} minutes = {(time.time() - run_time)/60/60:.1f} hours')
-    run_time = time.time()
+    if config.ablation_study.get('generate_video', True):
+        print("\n[Step 3/3] Generating Comparison GIFs...")
+        make_gifs_for_study()
+        print("\n[Step 3/3] Finished Generating GIFs.")
+        print(f'Ablation GIF generation time: {(time.time() - run_time)/60:.0f} minutes = {(time.time() - run_time)/60/60:.1f} hours')
+        run_time = time.time()
 
     print("\n--- Full Ablation Study Pipeline Complete! ---")
     print(f'Total time taken: {(time.time() - t_start)/60:.0f} minutes = {(time.time() - t_start)/60/60:.1f} hours')

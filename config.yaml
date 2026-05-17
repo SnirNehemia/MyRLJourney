@@ -138,32 +138,35 @@ agent:
   per_beta_frames: 500000 # Number of frames over which beta anneals
   # For a2c
   critic_loss_weight: 0.5
-  entropy_weight: 0.01
-  n_steps: 20 # Number of steps for n-step returns in A2C
+  critic_lr: 0.001 # Separate LR for A2C critic optimizer (actor uses lr_start)
+  entropy_weight_start: 0.003   # Initial entropy weight
+  entropy_weight_end: 0.0003   # Minimum entropy weight
+  entropy_weight_t_anneal: 4000 # Episodes over which entropy weight anneals linearly (0 = no annealing)
+  n_steps: 64 # Number of steps for n-step returns in A2C
   gae_lambda: 0.95 # Lambda for Generalized Advantage Estimation
   num_envs: 8 # Number of parallel environments for A2C/PPO batched data collection
   share_network: false # Determines if actor and critic share a common backbone
 
 training:
   n_episodes: 500
-  max_t: 500
+  max_t: 1000
   exploration:
     strategy: "epsilon_greedy" # "epsilon_greedy" or "boltzmann"
     epsilon:
       start: 1.0
       end: 0.001
-      decay: 0.9995 # Multiplicative decay factor per episode
+      decay: 0.995 # Multiplicative decay factor per episode
     boltzmann:
       temperature_start: 1.0
       temperature_end: 0.5
       temperature_decay: 0.9999 # Multiplicative decay factor per episode
   # Learning Rate Scheduler
-  lr_start: 0.005      # Initial learning rate
+  lr_start: 0.001      # Initial learning rate
   lr_end: 0.0001        # Minimum learning rate
   lr_decay: 0.9999       # Multiplicative decay factor per episode
   
   # Tau Scheduler: the smaller, the slower it updates the target network
-  tau_start: 0.002       # Initial tau for soft update
+  tau_start: 0.005       # Initial tau for soft update
   tau_end: 0.0005        # Minimum tau
   tau_decay: 1.0      # Set to 1.0 to disable tau decay. Decaying tau freezes the target network.
 
@@ -175,26 +178,67 @@ experiment:
   n_episodes: 3000
 
 ablation_study:
-  study_name: "A2C_DQN_Comparison_6"
-  n_episodes: 3000
+  # Goal: test whether K critic-update epochs per rollout can rescue λ=0.95.
+  #
+  # Hypothesis: with a single critic pass (K=1), the critic never converges before
+  # the actor consumes its value estimates. λ=0.95's noise-accumulation factor
+  # (~8.7×) then dominates and corrupts the advantage signal. K>1 critic epochs
+  # train the critic to better approximate the frozen TD-lambda returns before the
+  # actor updates — improving advantage quality without violating the on-policy
+  # constraint (returns are fixed; actor updates only once per rollout).
+  #
+  # Expected: K=1 fails (known lower bound), K=8 approaches λ=1.0 performance.
+  # If K=8 still fails, the effective-horizon gap (17 vs 256 steps) is the true
+  # bottleneck and cannot be fixed by critic quality alone.
+  study_name: "A2C_CriticEpochSweep"
+  generate_video: True
+  n_episodes: 6000
   seeds: [1, 2]
   experiments:
-    - name: "DQN"
-      agent:
-        algorithm: "dqn"
-    - name: "REINFORCE"
-      agent:
-        algorithm: "reinforce"
-    - name: "A2C (n-step)"
+    # Known failure — single critic pass, λ=0.95.
+    - name: "A2C lambda=0.95 K=1"
       agent:
         algorithm: "a2c"
-        gae_lambda: 1.0 # gae_lambda=1.0 is equivalent to n-step returns
-    # - name: "A2C (GAE)"
-    #   agent:
-    #     algorithm: "a2c"
-    #     gae_lambda: 0.95 # A typical value for GAE
-    # - name: "A2C (GAE, Shared Network)"
-    #   agent:
-    #     algorithm: "a2c"
-    #     gae_lambda: 0.95 # A typical value for GAE
-    #     share_network: true
+        gae_lambda: 0.95
+        gamma: 0.99
+        n_steps: 256
+        critic_loss_weight: 0.5
+        entropy_weight_start: 0.0
+        entropy_weight_end: 0.0
+        k_critic_epochs: 1
+
+    # Moderate: 4 critic passes before the actor updates.
+    - name: "A2C lambda=0.95 K=4"
+      agent:
+        algorithm: "a2c"
+        gae_lambda: 0.95
+        gamma: 0.99
+        n_steps: 256
+        critic_loss_weight: 0.5
+        entropy_weight_start: 0.0
+        entropy_weight_end: 0.0
+        k_critic_epochs: 4
+
+    # Strong: 8 critic passes — close to what PPO typically uses.
+    - name: "A2C lambda=0.95 K=8"
+      agent:
+        algorithm: "a2c"
+        gae_lambda: 0.95
+        gamma: 0.99
+        n_steps: 256
+        critic_loss_weight: 0.5
+        entropy_weight_start: 0.0
+        entropy_weight_end: 0.0
+        k_critic_epochs: 8
+
+    # Upper bound reference — λ=1.0 is structurally immune to critic noise.
+    - name: "A2C lambda=1.0 K=1"
+      agent:
+        algorithm: "a2c"
+        gae_lambda: 1.0
+        gamma: 0.99
+        n_steps: 256
+        critic_loss_weight: 0.5
+        entropy_weight_start: 0.0
+        entropy_weight_end: 0.0
+        k_critic_epochs: 1
