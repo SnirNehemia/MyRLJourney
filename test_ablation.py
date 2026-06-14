@@ -7,7 +7,7 @@ from omegaconf import OmegaConf
 
 from agent import Agent, device
 try:
-    from agent import A2CAgent, ReinforceAgent
+    from agent import A2CAgent, ReinforceAgent, PPOAgent
 except ImportError:
     pass
 
@@ -62,6 +62,10 @@ def test_network(model_path, config, n_episodes=100):
         agent = A2CAgent(state_size=agent_state_size, action_size=agent_action_size, config=config, seed=0)
         agent.network.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
         agent.network.eval()
+    elif algo == 'ppo':
+        agent = PPOAgent(state_size=agent_state_size, action_size=agent_action_size, config=config, seed=0)
+        agent.network.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
+        agent.network.eval()
     elif algo == 'reinforce':
         agent = ReinforceAgent(state_size=agent_state_size, action_size=agent_action_size, config=config, seed=0)
         agent.network.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
@@ -83,7 +87,7 @@ def test_network(model_path, config, n_episodes=100):
         for t in range(config.training.max_t):
             # Get max predicted Q-value for the current state
             state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(device)
-            if algo == 'a2c':
+            if algo in ('a2c', 'ppo'):
                 with torch.no_grad():
                     dist, state_value = agent.network(state_tensor)
                 episode_max_q_vals.append(state_value.item())

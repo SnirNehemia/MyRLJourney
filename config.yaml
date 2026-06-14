@@ -1,11 +1,11 @@
 project:
-  version: "1.5.2"
+  version: "1.6.0"
   seed: 0
 
-active_env: "LunarLander-v3" 
+active_env: "Hopper-v4"
 
 save_parameters:
-  run_name: "SAVE_NAME"
+  run_name: "PPO_Hopper"
   n_gifs: 5
   show_plots: false # Set to true to display plots, false to only save them
   add_saliency_to_gif: true # Set to true to add a saliency plot to the GIF
@@ -91,8 +91,18 @@ environments:
     state_size: 3
     action_size: 1 # Continuous action space with 1 dimension
     win_condition: -150.0
+    is_continuous: true
     network:
       hidden_size: [64, 64]
+
+  "Hopper-v4":
+    state_size: 11
+    action_size: 3 # Continuous action space with 3 dimensions
+    is_continuous: true
+    win_condition: 2500.0   # strong-policy target (not an official "solved" threshold)
+    network:
+      hidden_size: [64, 64] # standard PPO MuJoCo size
+    v_plot_range: [0, 3000] # for the critic value plot in GIFs
 
   "BipedalWalker-v3":
     state_size: 24
@@ -120,7 +130,7 @@ environments:
       hidden_size: [128, 128]
 
 agent:
-  algorithm: "dqn" # Can be updated by ablation study to "a2c", "reinforce", etc.
+  algorithm: "ppo" # Can be updated by ablation study to "a2c", "reinforce", "ppo", etc.
   buffer_size: 1000000
   batch_size: 32
   gamma: 0.99
@@ -138,18 +148,43 @@ agent:
   per_beta_frames: 500000 # Number of frames over which beta anneals
   # For a2c
   critic_loss_weight: 0.5
-  critic_lr: 0.001 # Separate LR for A2C critic optimizer (actor uses lr_start)
-  entropy_weight_start: 0.003   # Initial entropy weight
-  entropy_weight_end: 0.0003   # Minimum entropy weight
-  entropy_weight_t_anneal: 4000 # Episodes over which entropy weight anneals linearly (0 = no annealing)
-  n_steps: 64 # Number of steps for n-step returns in A2C
+  critic_lr: 0.001  # PPO (separate network mode): higher LR for critic to converge before actor updates
+  entropy_weight_start: 0.0   # PPO on Pendulum: no entropy needed (Normal std handles exploration)
+  entropy_weight_end: 0.0
+  entropy_weight_t_anneal: 0
+  n_steps: 512   # Steps per env per rollout.
   gae_lambda: 0.95 # Lambda for Generalized Advantage Estimation
-  num_envs: 8 # Number of parallel environments for A2C/PPO batched data collection
-  share_network: false # Determines if actor and critic share a common backbone
+  num_envs: 4 # Number of parallel environments for A2C/PPO batched data collection
+  share_network: false # Separate actor/critic for PPO: prevents critic gradient interference
+                       # With share_network=True, the large early critic loss (MSE ~11000)
+                       # dominates the shared backbone before the actor has learned anything,
+                       # causing the actor's first big update to go in a noisy direction.
+                       # Separate networks give each head a dedicated gradient path.
+
+  # PPO-specific hyperparameters
+  # ppo_clip_eps: the ε in clip(r, 1−ε, 1+ε). 0.2 is the standard starting point.
+  ppo_clip_eps: 0.2
+  # ppo_epochs: how many full passes over the rollout data per update.
+  # A2C does 1 actor pass. PPO can safely do 10+ because of clipping.
+  ppo_epochs: 10
+  # num_minibatches: the rollout is split into this many random minibatches each epoch.
+  # Adds stochasticity and lets you use larger rollouts without huge per-step memory.
+  num_minibatches: 32  # 512×4 envs = 2048 / 32 = 64 samples per minibatch (MuJoCo standard)
+  # normalize_advantage: rescale advantages to ~N(0,1) per minibatch.
+  # Keeps the policy gradient scale consistent regardless of reward magnitude.
+  normalize_advantage: true
+  # clip_value_loss: apply the same clipping idea to the value function update.
+  # Prevents the critic from changing faster than the frozen GAE targets expect.
+  clip_value_loss: true
+  # target_kl: stop PPO epochs early if approximate KL exceeds this threshold.
+  # A second safety valve on top of clipping. Set to 0 to disable.
+  k_critic_epochs: 4    # PPO: critic-only warmup epochs before each actor PPO phase.
+                        # Gives the critic a head start so advantages are meaningful.
+  target_kl: 0.01        # Disable KL early-stop for now (clipping is sufficient)
 
 training:
-  n_episodes: 500
-  max_t: 1000
+  n_episodes: 20000  # Hopper needs ~3M env steps: 20k eps × ~150-step avg / (4 envs × 512) ≈ 1465 rollouts
+  max_t: 1000        # Hopper-v4's built-in episode limit
   exploration:
     strategy: "epsilon_greedy" # "epsilon_greedy" or "boltzmann"
     epsilon:
@@ -160,10 +195,10 @@ training:
       temperature_start: 1.0
       temperature_end: 0.5
       temperature_decay: 0.9999 # Multiplicative decay factor per episode
-  # Learning Rate Scheduler
-  lr_start: 0.001      # Initial learning rate
-  lr_end: 0.0001        # Minimum learning rate
-  lr_decay: 0.9999       # Multiplicative decay factor per episode
+  # Learning Rate Scheduler (PPO uses a fixed small lr; set decay=1.0 to disable)
+  lr_start: 0.0003     # 3e-4 is the standard PPO learning rate
+  lr_end: 0.0001
+  lr_decay: 1.0        # No decay for PPO baseline run
   
   # Tau Scheduler: the smaller, the slower it updates the target network
   tau_start: 0.005       # Initial tau for soft update
@@ -178,67 +213,48 @@ experiment:
   n_episodes: 3000
 
 ablation_study:
-  # Goal: test whether K critic-update epochs per rollout can rescue λ=0.95.
+  # Goal: test whether PPO's clipping mechanism actually enables safe data reuse
+  # across multiple epochs over the same rollout — on a harder MuJoCo task (Hopper-v4).
   #
-  # Hypothesis: with a single critic pass (K=1), the critic never converges before
-  # the actor consumes its value estimates. λ=0.95's noise-accumulation factor
-  # (~8.7×) then dominates and corrupts the advantage signal. K>1 critic epochs
-  # train the critic to better approximate the frozen TD-lambda returns before the
-  # actor updates — improving advantage quality without violating the on-policy
-  # constraint (returns are fixed; actor updates only once per rollout).
-  #
-  # Expected: K=1 fails (known lower bound), K=8 approaches λ=1.0 performance.
-  # If K=8 still fails, the effective-horizon gap (17 vs 256 steps) is the true
-  # bottleneck and cannot be fixed by critic quality alone.
-  study_name: "A2C_CriticEpochSweep"
-  generate_video: True
-  n_episodes: 6000
+  # Hypothesis: at E=1 PPO degrades to A2C-like data efficiency (clipping never
+  # activates on the first pass). As epochs increase, clipping constrains the
+  # policy ratio and allows the agent to extract more signal per rollout without
+  # diverging. Expected: E=10 converges fastest; E=1 converges slowest.
+  # Hopper is harder than Pendulum, so the gap between epoch counts should be more visible.
+  study_name: "PPO_EpochSweep_Hopper"
+  generate_video: true
+  n_episodes: 20000  # ~3M env steps at avg 150-step episodes with 4 envs
   seeds: [1, 2]
   experiments:
-    # Known failure — single critic pass, λ=0.95.
-    - name: "A2C lambda=0.95 K=1"
+    # Baseline — one pass per rollout, clipping never activates. A2C-like data efficiency.
+    - name: "PPO E=1 (A2C-like)"
       agent:
-        algorithm: "a2c"
-        gae_lambda: 0.95
-        gamma: 0.99
-        n_steps: 256
-        critic_loss_weight: 0.5
-        entropy_weight_start: 0.0
-        entropy_weight_end: 0.0
-        k_critic_epochs: 1
+        algorithm: "ppo"
+        ppo_epochs: 1
+        ppo_clip_eps: 0.2
+        num_minibatches: 32
+        n_steps: 512
+        normalize_advantage: true
+        clip_value_loss: true
 
-    # Moderate: 4 critic passes before the actor updates.
-    - name: "A2C lambda=0.95 K=4"
+    # Moderate reuse — clipping starts to constrain the update.
+    - name: "PPO E=4"
       agent:
-        algorithm: "a2c"
-        gae_lambda: 0.95
-        gamma: 0.99
-        n_steps: 256
-        critic_loss_weight: 0.5
-        entropy_weight_start: 0.0
-        entropy_weight_end: 0.0
-        k_critic_epochs: 4
+        algorithm: "ppo"
+        ppo_epochs: 4
+        ppo_clip_eps: 0.2
+        num_minibatches: 32
+        n_steps: 512
+        normalize_advantage: true
+        clip_value_loss: true
 
-    # Strong: 8 critic passes — close to what PPO typically uses.
-    - name: "A2C lambda=0.95 K=8"
+    # Full PPO — standard recipe, maximum safe reuse per rollout.
+    - name: "PPO E=10 (standard)"
       agent:
-        algorithm: "a2c"
-        gae_lambda: 0.95
-        gamma: 0.99
-        n_steps: 256
-        critic_loss_weight: 0.5
-        entropy_weight_start: 0.0
-        entropy_weight_end: 0.0
-        k_critic_epochs: 8
-
-    # Upper bound reference — λ=1.0 is structurally immune to critic noise.
-    - name: "A2C lambda=1.0 K=1"
-      agent:
-        algorithm: "a2c"
-        gae_lambda: 1.0
-        gamma: 0.99
-        n_steps: 256
-        critic_loss_weight: 0.5
-        entropy_weight_start: 0.0
-        entropy_weight_end: 0.0
-        k_critic_epochs: 1
+        algorithm: "ppo"
+        ppo_epochs: 10
+        ppo_clip_eps: 0.2
+        num_minibatches: 32
+        n_steps: 512
+        normalize_advantage: true
+        clip_value_loss: true

@@ -5,7 +5,7 @@ import numpy as np
 from collections import deque
 import matplotlib.pyplot as plt
 import time, importlib
-from agent import Agent, A2CAgent, ReinforceAgent, device
+from agent import Agent, A2CAgent, ReinforceAgent, PPOAgent, device
 from omegaconf import OmegaConf
 import os, shutil
 
@@ -439,6 +439,245 @@ def a2c(config, seed=None, record_name=None, n_episodes=None, run_type='train', 
     }
 
     return scores, [], avg_state_value_history, grad_updates_at_score, loss_histories
+
+def ppo(config, seed=None, record_name=None, n_episodes=None, run_type='train', study_name=None):
+    """Proximal Policy Optimization training loop.
+
+    Nearly identical structure to a2c() — the critical differences are:
+      1. act() is called with return_extra=True, which returns (action, log_prob, value).
+         These are stored in the memory tuple so learn_from_batch has the old policy info.
+      2. Memory tuples carry (state, action, reward, next_state, done, log_prob, value)
+         instead of A2C's (state, action, reward, next_state, done).
+      3. Logs approx_kl and epochs_done diagnostics in addition to A2C's loss metrics.
+
+    Everything else — AsyncVectorEnv, episode counting, checkpointing, the 5-tuple return
+    contract — is unchanged so ablation_study.py works without modification.
+    """
+    active_env_name = config.active_env
+    env_config = config.environments[active_env_name]
+    num_envs = config.agent.get('num_envs', 4)
+
+    def make_env():
+        env_params = {}
+        if 'lunar_params' in env_config:
+            env_params = OmegaConf.to_container(env_config.lunar_params)
+        e = gym.make(active_env_name, **env_params)
+        if not env_config.get('is_continuous', False) and isinstance(e.action_space, gym.spaces.Box):
+            bins = env_config.get('discrete_bins', 3)
+            e = DiscretizeBoxWrapper(e, bins)
+        return e
+
+    env = gym.vector.AsyncVectorEnv([make_env for _ in range(num_envs)])
+
+    dummy_env = make_env()
+    if env_config.get('is_continuous', False):
+        real_action_size = dummy_env.action_space.shape[0]
+    else:
+        real_action_size = dummy_env.action_space.n
+    agent_state_size = dummy_env.observation_space.shape[0]
+    dummy_env.close()
+
+    agent_action_size = real_action_size
+    use_fake_actions  = env_config.get('use_fake_actions', False)
+    if use_fake_actions:
+        num_fake = env_config.get('num_fake_actions', 0)
+        agent_action_size += num_fake
+
+    _version  = config.project.version.replace(".", "-")
+    _run_name = record_name if record_name is not None else config.save_parameters.run_name
+
+    if study_name is not None:
+        output_dir = f"raw_results/{active_env_name}/{_version}/{run_type}/{study_name}/{_run_name}"
+    else:
+        output_dir = f"raw_results/{active_env_name}/{_version}/{run_type}/{_run_name}"
+    os.makedirs(output_dir, exist_ok=True)
+    OmegaConf.save(config, os.path.join(output_dir, "run_config.yaml"))
+
+    current_seed   = seed if seed is not None else config.project.seed
+    total_episodes = n_episodes if n_episodes is not None else config.training.n_episodes
+
+    agent = PPOAgent(state_size=agent_state_size, action_size=agent_action_size,
+                     config=config, seed=current_seed)
+
+    lr = config.training.get('lr_start', config.agent.get('lr', 3e-4))
+    agent.update_lr(lr)
+    entropy_weight_start  = config.agent.get('entropy_weight_start', 0.0)
+    entropy_weight_end    = config.agent.get('entropy_weight_end', entropy_weight_start)
+    entropy_weight_anneal = config.agent.get('entropy_weight_t_anneal', 0)
+    agent.update_entropy_weight(entropy_weight_start)
+
+    # --- History buffers (mirrors a2c for compatible 5-tuple return) ---
+    scores              = []
+    scores_window       = deque(maxlen=100)
+    avg_state_value_history = []
+    ev_history          = []
+    actor_loss_history  = []
+    critic_loss_history = []
+    entropy_loss_history = []
+    raw_entropy_history = []
+    grad_norm_history   = []
+    approx_kl_history   = []
+    epochs_done_history = []
+    ep_len_history      = []
+    value_scatter_samples  = []
+    return_scatter_samples = []
+    grad_updates_at_score  = []
+    grad_updates = 0
+
+    best_score  = -float('inf')
+    time_ref    = time.time()
+    n_steps     = config.agent.get('n_steps', 512)
+    memory      = []
+
+    state, _ = env.reset(seed=current_seed)
+    episode_rewards     = np.zeros(num_envs)
+    episode_step_counts = np.zeros(num_envs, dtype=int)
+
+    completed_episodes         = 0
+    last_logged_episode        = 0
+    episodes_completed_this_batch = 0
+
+    while completed_episodes < total_episodes:
+        episode_state_vals = []
+
+        # ── Rollout collection ──────────────────────────────────────────────
+        # Collect n_steps transitions from all num_envs environments in parallel.
+        # Crucially: for each step we also capture log π_old(a|s) and V_old(s)
+        # (via return_extra=True). These are stored and used in learn_from_batch
+        # to compute the IS ratio and (optionally) value clipping.
+        for t in range(n_steps):
+            # act() does one forward pass: dist → sample action + log_prob + value.
+            # All three come out in a single no_grad call — no extra network pass needed.
+            agent_action, log_prob, state_value = agent.act(state, return_extra=True)
+
+            episode_state_vals.append(np.mean(state_value))
+
+            env_action = agent_action.copy() if hasattr(agent_action, 'copy') else agent_action
+            if use_fake_actions and not env_config.get('is_continuous', False):
+                map_to_action = env_config.get('fake_action_maps_to', 0)
+                env_action[agent_action >= real_action_size] = map_to_action
+
+            next_state, reward, terminated, truncated, _ = env.step(env_action)
+            done = terminated | truncated
+
+            # The 7-tuple: (s, a, r, s', done, log π_old, V_old)
+            memory.append((state, agent_action, reward, next_state, done, log_prob, state_value))
+
+            state = next_state
+            episode_rewards     += reward
+            episode_step_counts += 1
+
+            for i, d in enumerate(done):
+                if d:
+                    scores_window.append(episode_rewards[i])
+                    scores.append(episode_rewards[i])
+                    grad_updates_at_score.append(grad_updates)
+                    ep_len_history.append(int(episode_step_counts[i]))
+                    episode_rewards[i]     = 0
+                    episode_step_counts[i] = 0
+                    completed_episodes += 1
+                    episodes_completed_this_batch += 1
+
+        # ── PPO update ──────────────────────────────────────────────────────
+        d = agent.learn_from_batch(memory)
+        ev_history.append(d['ev'])
+        actor_loss_history.append(d['actor_loss'])
+        critic_loss_history.append(d['critic_loss'])
+        entropy_loss_history.append(d['entropy_loss'])
+        raw_entropy_history.append(d['raw_entropy'])
+        grad_norm_history.append(d['grad_norm'])
+        approx_kl_history.append(d['approx_kl'])
+        epochs_done_history.append(d['epochs_done'])
+        if grad_updates % 10 == 0:
+            value_scatter_samples.append(d['values_sample'])
+            return_scatter_samples.append(d['returns_sample'])
+        grad_updates += 1
+        memory.clear()
+
+        if episode_state_vals:
+            avg_state_value_history.append(np.mean(episode_state_vals))
+        else:
+            avg_state_value_history.append(
+                0 if not avg_state_value_history else avg_state_value_history[-1]
+            )
+
+        current_avg = np.mean(scores_window) if scores_window else -float('inf')
+
+        for _ in range(episodes_completed_this_batch):
+            lr = max(config.training.get('lr_end', 0.0),
+                     config.training.get('lr_decay', 1.0) * lr)
+            agent.update_lr(lr)
+        if entropy_weight_anneal > 0:
+            t_frac = min(1.0, completed_episodes / entropy_weight_anneal)
+            ew = entropy_weight_start + (entropy_weight_end - entropy_weight_start) * t_frac
+            agent.update_entropy_weight(ew)
+        episodes_completed_this_batch = 0
+
+        if current_avg > best_score and completed_episodes > 100:
+            best_score = current_avg
+            torch.save(agent.network.state_dict(), f'{output_dir}/{_run_name}_local_best.pth')
+
+        if completed_episodes > last_logged_episode:
+            kl_str = f'  KL={d["approx_kl"]:.4f}  epochs={d["epochs_done"]}'
+            if n_episodes is None:
+                print(f'\rEpisode {completed_episodes}\tAvg: {current_avg:.2f}{kl_str}', end="")
+                if completed_episodes - last_logged_episode >= 100 or completed_episodes % 100 == 0:
+                    print(f'\rEpisode {completed_episodes}\tAvg: {current_avg:.2f}'
+                          f'\tEV: {d["ev"]:.3f}{kl_str}'
+                          f'\tTime: {time.time()-time_ref:.0f}s')
+                    last_logged_episode = completed_episodes
+            else:
+                if completed_episodes - last_logged_episode >= 10:
+                    print(f'\rEpisode {completed_episodes}\tAvg: {current_avg:.2f}{kl_str}', end="")
+                    last_logged_episode = completed_episodes
+                if completed_episodes % 250 == 0:
+                    print('')
+
+    env.close()
+    torch.save(agent.network.state_dict(), f'{output_dir}/{_run_name}_last.pth')
+
+    if value_scatter_samples:
+        all_v = np.concatenate(value_scatter_samples)
+        all_r = np.concatenate(return_scatter_samples)
+        rng = np.random.default_rng(current_seed)
+        idx = rng.choice(len(all_v), size=min(5000, len(all_v)), replace=False)
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.scatter(all_v[idx], all_r[idx], alpha=0.15, s=5)
+        lim = max(np.abs(all_v[idx]).max(), np.abs(all_r[idx]).max()) * 1.05
+        ax.plot([-lim, lim], [-lim, lim], 'r--', linewidth=1.5, label='Perfect prediction')
+        ax.set_xlabel('Critic V(s) prediction')
+        ax.set_ylabel('Actual return G')
+        ax.set_title(f'Critic Value Accuracy — {_run_name}')
+        ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{output_dir}/value_accuracy_scatter.png', dpi=150)
+        plt.close(fig)
+
+    scores              = scores[:total_episodes]
+    grad_updates_at_score = grad_updates_at_score[:total_episodes]
+
+    def _interp(h):
+        if len(h) > 1:
+            x = np.linspace(0, total_episodes, num=len(h), endpoint=False)
+            return np.interp(np.arange(total_episodes), x, h).tolist()
+        return ([h[0]] * total_episodes) if h else ([0] * total_episodes)
+
+    avg_state_value_history = _interp(avg_state_value_history)
+    loss_histories = {
+        'ev':               _interp(ev_history),
+        'actor':            _interp(actor_loss_history),
+        'critic':           _interp(critic_loss_history),
+        'entropy':          _interp(entropy_loss_history),
+        'raw_entropy':      _interp(raw_entropy_history),
+        'actor_grad_norm':  _interp(grad_norm_history),
+        'critic_grad_norm': _interp(grad_norm_history),  # same value; kept for compat
+        'ep_len':           _interp(ep_len_history),
+        'approx_kl':        _interp(approx_kl_history),
+        'epochs_done':      _interp(epochs_done_history),
+    }
+
+    return scores, [], avg_state_value_history, grad_updates_at_score, loss_histories
+
 
 def reinforce(config, seed=None, record_name=None, n_episodes=None, run_type='train', study_name=None):
     """REINFORCE (Monte Carlo Policy Gradient) training loop."""

@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 
 from agent import Agent, device
 try:
-    from agent import A2CAgent, ReinforceAgent
+    from agent import A2CAgent, ReinforceAgent, PPOAgent
 except ImportError:
     pass
 from omegaconf import OmegaConf
@@ -265,6 +265,10 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
                 agent = A2CAgent(state_size=agent_state_size, action_size=agent_action_size, config=run_config, seed=0)
                 agent.network.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
                 eval_network = agent.network
+            elif algo == 'ppo':
+                agent = PPOAgent(state_size=agent_state_size, action_size=agent_action_size, config=run_config, seed=0)
+                agent.network.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
+                eval_network = agent.network
             elif algo == 'reinforce':
                 agent = ReinforceAgent(state_size=agent_state_size, action_size=agent_action_size, config=run_config, seed=0)
                 agent.network.load_state_dict(torch.load(model_path, map_location=torch.device('cpu'), weights_only=True))
@@ -316,13 +320,24 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
                     agent.network.eval()
                     dist, state_value, activations = agent.network(state_tensor, return_activations=True)
                     agent.network.train()
-                    
+
                     if env_config.get('is_continuous', False):
                         # For continuous, actor output is mean, which is also the greedy action
                         action_values = dist.mean
                         agent_action = action_values.detach().cpu().numpy().flatten()
                     else:
                         # For discrete, actor output is logits, from which we derive greedy action
+                        action_values = dist.logits
+                        agent_action = torch.argmax(action_values.detach()).item()
+                elif algo == 'ppo':
+                    agent.network.eval()
+                    dist, state_value = agent.network(state_tensor)
+                    agent.network.train()
+
+                    if env_config.get('is_continuous', False):
+                        action_values = dist.mean
+                        agent_action = action_values.detach().cpu().numpy().flatten()
+                    else:
                         action_values = dist.logits
                         agent_action = torch.argmax(action_values.detach()).item()
                 elif algo == 'reinforce':
@@ -353,7 +368,24 @@ def make_gifs_for_study(model_seed=0, run_type='ablation'):
 
                 side_panel_img = None
                 if add_saliency: # This flag now controls all side panels
-                    if algo == 'a2c':
+                    if algo == 'ppo':
+                        plot_h = frame_h // 2
+                        plot_h_rem = frame_h % 2
+
+                        if env_config.get('is_continuous', False):
+                            actor_vals = action_values.detach().cpu().numpy().flatten()
+                        else:
+                            actor_vals = torch.nn.functional.softmax(action_values, dim=-1).detach().cpu().numpy().squeeze()
+                        if actor_vals.ndim == 0:
+                            actor_vals = np.array([actor_vals.item()])
+
+                        actor_plot = create_actor_policy_plot(actor_vals, action_labels, agent_action, 300, plot_h, is_continuous=env_config.get('is_continuous', False))
+
+                        v_plot_range = env_config.get('q_plot_range', [-500, 0])
+                        critic_plot = create_critic_value_plot(state_value.item(), 300, plot_h + plot_h_rem, value_range=v_plot_range)
+
+                        side_panel_img = np.vstack((actor_plot, critic_plot))
+                    elif algo == 'a2c':
                         plot_h = frame_h // 2
                         plot_h_rem = frame_h % 2
                         

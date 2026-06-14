@@ -1,6 +1,3 @@
-from run_ablation import run_ablation_study
-from test_ablation import test_ablation
-from make_gif import make_gifs_for_study
 import time
 from omegaconf import OmegaConf
 
@@ -15,6 +12,13 @@ def run_full_pipeline():
     2. Tests the best model from each configuration and generates reports.
     3. Creates comparison GIFs for visual analysis.
     """
+    # Imported here (not at module level) so that AsyncVectorEnv worker
+    # processes - which re-execute this file as __mp_main__ on Windows -
+    # don't trigger make_gif's heavy moviepy/ffmpeg import chain.
+    from run_ablation import run_ablation_study
+    from test_ablation import test_ablation
+    from make_gif import make_gifs_for_study
+
     t_start = time.time()
     run_time = time.time()
     print("--- Starting Full Ablation Study Pipeline ---")
